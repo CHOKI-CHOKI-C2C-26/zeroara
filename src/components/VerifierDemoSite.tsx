@@ -11,6 +11,7 @@ import {
   Car,
   AlertTriangle,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 import type { ZeroaraAuditPackage, VerifierAuditReport } from '../layers';
 import { runEnterpriseAudit, downloadFile, formatChunkedHash } from '../layers';
@@ -51,12 +52,15 @@ export function VerifierDemoSite({
   onStart,
   onOpenZeroara,
   onReset,
+  onStartTutorial,
 }: {
   request: VerifierRequest | null;
   result: VerifierResult | null;
   onStart: () => void;
   onOpenZeroara: () => void;
   onReset: () => void;
+  /** Starts the guided walkthrough overlay (an add-on; the site itself is unchanged). */
+  onStartTutorial?: () => void;
 }) {
   const [report, setReport] = useState<VerifierAuditReport | null>(null);
   const [auditing, setAuditing] = useState(false);
@@ -103,7 +107,15 @@ export function VerifierDemoSite({
             <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.15rem', color: 'var(--fg-primary)' }}>Aegis Rentals</span>
             <span style={{ fontSize: '0.78rem', color: 'var(--fg-muted)' }}>Cars · Bikes · Vans</span>
           </div>
-          <span className="neu-hash-pill">Booking #AR-58213 · Pick-up today</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <span className="neu-hash-pill">Booking #AR-58213 · Pick-up today</span>
+            {onStartTutorial && (
+              <button type="button" className="neu-btn-secondary" style={{ padding: '7px 12px', fontSize: '0.76rem', gap: '6px' }} onClick={onStartTutorial} title="Starts a fresh run and walks you through every step">
+                <Sparkles size={14} style={{ color: 'var(--accent)' }} />
+                <span>Guided walkthrough</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="demo-hero">
@@ -122,14 +134,14 @@ export function VerifierDemoSite({
           </div>
 
           {/* Right: the verification state */}
-          <div className="neu-well" style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '14px', justifyContent: 'center' }}>
+          <div className="neu-well" style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '14px', justifyContent: 'center' }} data-tour="demo-panel">
             {status === 'idle' && (
               <>
                 <StatusBadge tone="muted">Age not yet verified</StatusBadge>
                 <p style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>
                   Verification runs on your device. This site receives a redacted, non-extractable document and a receipt — never the original.
                 </p>
-                <button type="button" className="neu-btn-primary" style={{ padding: '14px 18px', fontSize: '0.92rem', gap: '10px', width: '100%' }} onClick={onStart}>
+                <button type="button" className="neu-btn-primary" style={{ padding: '14px 18px', fontSize: '0.92rem', gap: '10px', width: '100%' }} onClick={onStart} data-tour="demo-cta">
                   <ShieldCheck size={18} />
                   <span>Verify with Zeroara</span>
                 </button>
@@ -145,7 +157,7 @@ export function VerifierDemoSite({
                 <KV label="Claim requested" value={request.claim} />
                 <KV label="Challenge nonce" value={`${request.nonce.slice(0, 18)}…`} />
                 <KV label="Issued" value={new Date(request.issuedAt).toLocaleTimeString()} />
-                <button type="button" className="neu-btn-primary" style={{ padding: '12px 16px', fontSize: '0.86rem', gap: '8px', width: '100%' }} onClick={onOpenZeroara}>
+                <button type="button" className="neu-btn-primary" style={{ padding: '12px 16px', fontSize: '0.86rem', gap: '8px', width: '100%' }} onClick={onOpenZeroara} data-tour="demo-open">
                   <ExternalLink size={16} />
                   <span>Open Zeroara to continue</span>
                 </button>
@@ -204,6 +216,7 @@ export function VerifierDemoSite({
                   style={{ padding: '11px 14px', fontSize: '0.82rem', gap: '8px', width: '100%' }}
                   onClick={runAudit}
                   disabled={auditing}
+                  data-tour="demo-audit"
                 >
                   {auditing ? <Loader2 size={15} className="spin" /> : <ShieldCheck size={15} />}
                   <span>{auditing ? 'Auditing…' : report ? 'Re-run independent audit' : 'Run independent 5-gate audit'}</span>
@@ -234,7 +247,7 @@ export function VerifierDemoSite({
 
         {/* Independent audit result */}
         {report && status === 'verified' && (
-          <div className="neu-well" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div className="neu-well" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '10px' }} data-tour="demo-audit-result">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
               <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.9rem' }}>Independent audit · {report.totalDurationMs} ms</span>
               <StatusBadge tone={report.overallValid ? 'ok' : 'warn'}>{report.overallValid ? 'ALL 5 GATES PASSED' : 'INTEGRITY BREACH'}</StatusBadge>

@@ -120,9 +120,9 @@ export function Drawer({
   );
 }
 
-export function StatusBadge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+export function StatusBadge({ tone, children, tourId }: { tone: Tone; children: React.ReactNode; tourId?: string }) {
   return (
-    <span className={`neu-claim-badge ${toneClass(tone)}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+    <span className={`neu-claim-badge ${toneClass(tone)}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }} data-tour={tourId}>
       {children}
     </span>
   );
@@ -216,6 +216,7 @@ export function StepItem({
   current,
   onClick,
   disabled,
+  tourId,
 }: {
   index: number;
   title: string;
@@ -224,11 +225,12 @@ export function StepItem({
   current: boolean;
   onClick?: () => void;
   disabled?: boolean;
+  tourId?: string;
 }) {
   const tone: Tone = state === 'done' ? 'ok' : state === 'active' ? 'active' : 'muted';
   const Icon = state === 'done' ? CheckCircle2 : state === 'active' ? CircleDot : Circle;
   return (
-    <button type="button" className={`neu-step-item ${current ? 'current' : ''}`} onClick={onClick} disabled={disabled} aria-current={current ? 'step' : undefined}>
+    <button type="button" className={`neu-step-item ${current ? 'current' : ''}`} onClick={onClick} disabled={disabled} aria-current={current ? 'step' : undefined} data-tour={tourId}>
       <span style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
         <span className={`neu-check-icon ${toneClass(tone)}`} style={{ width: '22px', height: '22px' }}>
           <Icon size={13} />

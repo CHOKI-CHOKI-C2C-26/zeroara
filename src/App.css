@@ -774,3 +774,29 @@ pre {
 .neu-dropzone.fill { flex: 1 1 0; min-height: 0; }
 @keyframes neu-spin { to { transform: rotate(360deg); } }
 .spin { animation: neu-spin 1s linear infinite; }
+
+/* Guided walkthrough overlay (verifier demo tutorial) */
+.tour-dim { position: fixed; z-index: 1000; background: rgba(30, 41, 59, 0.42); backdrop-filter: blur(2.5px); -webkit-backdrop-filter: blur(2.5px); }
+.tour-ring { position: fixed; z-index: 1001; pointer-events: none; border: 2px solid var(--accent); border-radius: 16px; animation: tour-pulse 1.6s ease-in-out infinite; }
+@keyframes tour-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(234, 88, 12, 0.22), 0 0 30px rgba(234, 88, 12, 0.30); }
+  50% { box-shadow: 0 0 0 7px rgba(234, 88, 12, 0.14), 0 0 44px rgba(234, 88, 12, 0.45); }
+}
+.tour-card {
+  position: fixed; z-index: 1002; box-sizing: border-box;
+  background-color: var(--bg-surface); border-radius: 20px;
+  box-shadow: var(--shadow-extruded-hover), 0 24px 60px rgba(15, 23, 42, 0.35);
+  padding: 14px 18px; display: flex; flex-direction: column; gap: 10px;
+}
+.tour-card-top { display: flex; align-items: center; gap: 10px; }
+.tour-chip { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 800; letter-spacing: 0.08em; padding: 3px 9px; border-radius: 999px; color: #fff; }
+.tour-chip.do { background-color: var(--accent); }
+.tour-chip.see { background-color: var(--accent-secondary); }
+.tour-progress { font-size: 0.72rem; color: var(--fg-muted); font-weight: 600; flex: 1; }
+.tour-text { margin: 0; font-size: 1.06rem; line-height: 1.4; font-weight: 600; color: var(--fg-primary); }
+.tour-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tour-waiting { display: inline-flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 700; color: var(--accent); }
+.tour-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: tour-blink 1.2s ease-in-out infinite; }
+@keyframes tour-blink { 0%, 100% { opacity: 0.25; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.1); } }
+.tour-link { background: none; border: none; cursor: pointer; font: inherit; font-size: 0.74rem; color: var(--fg-muted); text-decoration: underline; padding: 0; }
+.tour-link:hover { color: var(--accent); }

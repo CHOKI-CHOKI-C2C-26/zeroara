@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ShieldCheck, UploadCloud, FileCheck, CheckCircle2, XCircle, Download, ArrowLeft, Loader2, Copy, Check, FlaskConical, Layers } from 'lucide-react';
+import { ShieldCheck, UploadCloud, FileCheck, CheckCircle2, XCircle, Download, ArrowLeft, Loader2, Copy, Check, FlaskConical, Layers, Move, Binary, KeyRound, FileWarning, RotateCcw, AlertTriangle } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { ZeroaraAuditPackage } from '../layer5_seal/types';
 import type { VerifierAuditReport, TamperMode } from './types';
 import { runEnterpriseAudit, createTamperedPackage } from './verifierEngine';
-import { Accordion, KV, StatusBadge } from '../../components/ui';
+import { Drawer, KV, StatusBadge } from '../../components/ui';
 
 interface VerifierPortalViewProps {
   initialPackage?: ZeroaraAuditPackage | null;
@@ -48,11 +49,11 @@ const CHECKS: Record<number, { title: string; pass: (hasPdf: boolean, sealOnly: 
   },
 };
 
-const TAMPER_OPTIONS: { mode: TamperMode; label: string }[] = [
-  { mode: 'GEOMETRY_SHIFT', label: 'Move a black box by 1 px' },
-  { mode: 'PROOF_MUTATION', label: 'Change one number in the proof' },
-  { mode: 'COMMITMENT_FORGERY', label: 'Forge the commitment' },
-  { mode: 'DOCUMENT_HASH_CORRUPTION', label: 'Change the document fingerprint' },
+const TAMPER_OPTIONS: { mode: TamperMode; label: string; hint: string; icon: LucideIcon }[] = [
+  { mode: 'GEOMETRY_SHIFT', label: 'Move a black box by 1 px', hint: 'Shifts the first redaction zone by a single pixel.', icon: Move },
+  { mode: 'PROOF_MUTATION', label: 'Change one number in the proof', hint: 'Alters one coordinate of the Groth16 proof.', icon: Binary },
+  { mode: 'COMMITMENT_FORGERY', label: 'Forge the commitment', hint: 'Replaces the commitment to the hidden value.', icon: KeyRound },
+  { mode: 'DOCUMENT_HASH_CORRUPTION', label: 'Change the document fingerprint', hint: 'Edits the recorded hash of the redacted PDF.', icon: FileWarning },
 ];
 
 export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialPackage, onNavigateToStage }) => {
@@ -63,6 +64,7 @@ export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialP
   const [pdfName, setPdfName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showTech, setShowTech] = useState(false);
   const pdfBytesRef = useRef<Uint8Array | undefined>(undefined);
   const jsonInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
@@ -210,6 +212,53 @@ export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialP
                 <KV label="Redacted file" value={pdfName ?? `${pkg.sourceDocument.fileName} (not attached)`} mono={false} />
               </div>
 
+              <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px', boxShadow: tamper !== 'NONE' ? 'var(--shadow-inset-deep)' : 'var(--shadow-inset)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '10px', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.02rem', color: 'var(--fg-primary)' }}>
+                    <span className="neu-check-icon" style={{ width: '32px', height: '32px', color: 'var(--accent)' }}>
+                      <FlaskConical size={17} />
+                    </span>
+                    Try to break it
+                  </span>
+                  {tamper !== 'NONE' ? (
+                    <StatusBadge tone="warn">
+                      <AlertTriangle size={12} /> Tampered copy under test
+                    </StatusBadge>
+                  ) : (
+                    <StatusBadge tone="ok">Original package</StatusBadge>
+                  )}
+                </div>
+                <span style={{ fontSize: '0.82rem', color: 'var(--fg-muted)' }}>Pick an attack. Zeroara re-checks a tampered copy; the original package is never modified.</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                  {TAMPER_OPTIONS.map((t) => {
+                    const Icon = t.icon;
+                    const selected = tamper === t.mode;
+                    return (
+                      <button key={t.mode} type="button" className={`neu-check-item ${selected ? 'current' : ''}`} style={{ padding: '10px 12px', alignItems: 'flex-start' }} onClick={() => applyTamper(t.mode)} aria-pressed={selected}>
+                        <span className={`neu-check-icon ${selected ? 'neu-tone-warn' : 'neu-tone-active'}`} style={{ width: '28px', height: '28px' }}>
+                          <Icon size={15} />
+                        </span>
+                        <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '0.84rem', color: selected ? 'var(--accent-rose)' : 'var(--fg-primary)' }}>{t.label}</span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>{t.hint}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {tamper !== 'NONE' && report && (
+                  <span style={{ fontSize: '0.84rem', fontWeight: 700, color: failed.length ? 'var(--accent-rose)' : 'var(--fg-muted)' }}>
+                    {tamperLabel}: {failed.length ? `check${failed.length > 1 ? 's' : ''} ${failed.join(' and ')} now fail.` : 'no check failed.'}
+                  </span>
+                )}
+                {tamper !== 'NONE' && (
+                  <button type="button" className="neu-btn-primary" style={{ padding: '10px 14px', fontSize: '0.84rem', gap: '8px', backgroundColor: 'var(--accent-secondary)' }} onClick={() => applyTamper('NONE')}>
+                    <RotateCcw size={15} />
+                    <span>Restore the original package</span>
+                  </button>
+                )}
+              </div>
+
               <div className="neu-well" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)' }}>Master audit seal</span>
@@ -229,29 +278,6 @@ export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialP
                 <div className="neu-code-block" style={{ fontSize: '0.7rem' }}>{pkg.masterAuditSeal.sealHex}</div>
               </div>
 
-              <div className="neu-well" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                  <FlaskConical size={14} style={{ color: 'var(--accent)' }} /> Try to break it
-                </span>
-                <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>Change one thing in the package and watch the checks catch it. The original is never modified.</span>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {TAMPER_OPTIONS.map((t) => (
-                    <button key={t.mode} type="button" className={`neu-pill-btn ${tamper === t.mode ? 'active' : ''}`} style={{ fontSize: '0.7rem', padding: '4px 10px' }} onClick={() => applyTamper(t.mode)}>
-                      {t.label}
-                    </button>
-                  ))}
-                  {tamper !== 'NONE' && (
-                    <button type="button" className="neu-pill-btn" style={{ fontSize: '0.7rem', padding: '4px 10px', color: 'var(--accent-secondary)' }} onClick={() => applyTamper('NONE')}>
-                      Restore the original
-                    </button>
-                  )}
-                </div>
-                {tamper !== 'NONE' && report && (
-                  <span style={{ fontSize: '0.74rem', color: failed.length ? 'var(--accent-rose)' : 'var(--fg-muted)' }}>
-                    {tamperLabel}: {failed.length ? `check${failed.length > 1 ? 's' : ''} ${failed.join(' and ')} now fail.` : 'no check failed.'}
-                  </span>
-                )}
-              </div>
             </>
           )}
         </div>
@@ -310,21 +336,12 @@ export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialP
                 What this verifier never saw: the original document, the private value, or who the person is. <strong>0 bytes</strong> of confidential data.
               </span>
 
-              <Accordion title="Technical details" summary="expected vs actual">
-                {report.gates.map((g) => (
-                  <div key={g.gateNumber} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-primary)' }}>
-                      Gate {g.gateNumber} · {g.gateName} · {g.latencyMs} ms
-                    </span>
-                    <KV label="Expected" value={g.expectedValue} />
-                    <KV label="Actual" value={g.actualValue} />
-                  </div>
-                ))}
-              </Accordion>
-
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 <button type="button" className="neu-btn-primary" style={{ padding: '10px 14px', fontSize: '0.8rem', gap: '8px' }} onClick={downloadReceipt}>
                   <Download size={14} /> <span>Download verification receipt</span>
+                </button>
+                <button type="button" className="neu-btn-secondary" style={{ padding: '10px 14px', fontSize: '0.8rem', gap: '8px' }} onClick={() => setShowTech(true)}>
+                  <Binary size={14} /> <span>Technical details</span>
                 </button>
                 {onNavigateToStage && (
                   <button type="button" className="neu-btn-secondary" style={{ padding: '10px 14px', fontSize: '0.8rem', gap: '8px' }} onClick={() => onNavigateToStage(5)}>
@@ -336,6 +353,34 @@ export const VerifierPortalView: React.FC<VerifierPortalViewProps> = ({ initialP
           )}
         </div>
       </div>
+
+      <Drawer open={showTech && !!report} title="Technical details · expected vs actual" onClose={() => setShowTech(false)}>
+        {report && (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+              <StatusBadge tone={report.overallValid ? 'ok' : 'warn'}>{report.overallValid ? 'ALL 5 GATES PASSED' : 'INTEGRITY BREACH'}</StatusBadge>
+              <span className="neu-hash-pill">{report.totalDurationMs} ms total</span>
+              <span className="neu-hash-pill">{new Date(report.auditTimestamp).toLocaleString()}</span>
+              {tamper !== 'NONE' && <span className="neu-hash-pill neu-tone-warn">tampered copy: {tamperLabel}</span>}
+            </div>
+            {report.gates.map((g) => (
+              <div key={g.gateNumber} className="neu-well" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.84rem', color: 'var(--fg-primary)' }}>
+                    Gate {g.gateNumber} · {g.gateName}
+                  </span>
+                  <span className={`neu-hash-pill ${g.passed ? 'neu-tone-ok' : 'neu-tone-warn'}`}>
+                    {g.passed ? 'PASS' : 'FAIL'} · {g.latencyMs} ms
+                  </span>
+                </div>
+                <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>{g.details}</span>
+                <KV label="Expected" value={g.expectedValue} />
+                <KV label="Actual" value={g.actualValue} />
+              </div>
+            ))}
+          </>
+        )}
+      </Drawer>
     </div>
   );
 };

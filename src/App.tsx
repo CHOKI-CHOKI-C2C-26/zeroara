@@ -60,6 +60,7 @@ import {
 } from 'lucide-react';
 import { Accordion, Drawer, Select, StatusBadge, KV, HashBlock, StepItem } from './components/ui';
 import { VerifierDemoSite, type VerifierResult } from './components/VerifierDemoSite';
+import { TourOverlay, type TourSnapshot } from './components/TourOverlay';
 import {
   parseZeroaraRequest,
   decodeRequestParam,
@@ -257,6 +258,9 @@ export function App() {
   const [verifierResult, setVerifierResult] = useState<VerifierResult | null>(null);
   const [showProofDetails, setShowProofDetails] = useState(false);
   const [customThreshold, setCustomThreshold] = useState(false);
+  // Guided walkthrough (overlay add-on): 0 = off, n > 0 = run number.
+  const [tutorialRun, setTutorialRun] = useState(0);
+  const [demoEpoch, setDemoEpoch] = useState(0);
 
   // Real OCR & Extraction Pipeline State
   const [detectedFields, setDetectedFields] = useState<ClassifiedTarget[]>([]);
@@ -1079,6 +1083,15 @@ export function App() {
     setDeliveryState('idle');
   };
 
+  // Start the walkthrough from a clean slate: fresh demo site, no document.
+  const startTutorial = () => {
+    cancelRequest();
+    clearDocument();
+    setDemoEpoch((e) => e + 1);
+    setActiveView('demo');
+    setTutorialRun((r) => r + 1);
+  };
+
   const copySeal = () => {
     if (!masterSeal) return;
     navigator.clipboard.writeText(masterSeal.sealHex);
@@ -1232,6 +1245,19 @@ export function App() {
   if (auditPackage && verifierRequest && stage < 5 && deliveryState === 'idle')
     secondaryActions.push({ label: external ? `Send proof to ${verifierRequest.requester}` : `Return to ${verifierRequest.requester}`, icon: external ? <Send size={14} /> : <ExternalLink size={14} />, onClick: returnToVerifier });
 
+  const tourSnapshot: TourSnapshot = {
+    view: activeView,
+    stage,
+    hasRequest: !!verifierRequest,
+    hasDoc: !!doc,
+    ocrRunning,
+    targets: detectedFields.length,
+    hasRedaction: !!redactionResult,
+    proofVerified: !!(proofResult && proofVerified),
+    hasSeal: !!masterSeal,
+    hasResult: !!verifierResult,
+  };
+
   const stepClick = (n: StageNumber) => {
     if (n === 6 && verifierRequest) {
       if (deliveryState === 'idle') returnToVerifier();
@@ -1257,7 +1283,7 @@ export function App() {
                 {suryaStatus.online ? 'EGRESS: 0 KB · OCR ON 127.0.0.1' : 'EGRESS: 0 KB · SEVERED'}
               </span>
               {verifierRequest && (
-                <span className="neu-claim-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <span className="neu-claim-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }} data-tour="request-badge">
                   <KeyRound size={12} />
                   {verifierRequest.requester} asks: {verifierRequest.claim}
                   {external && verifierRequest.replyOrigin && <span style={{ color: 'var(--fg-muted)', fontWeight: 500 }}>&nbsp;· {verifierRequest.replyOrigin.replace(/^https?:\/\//, '')}</span>}
@@ -1269,11 +1295,11 @@ export function App() {
             </div>
 
             <div className="neu-nav-track" role="tablist" aria-label="Views">
-              <button type="button" role="tab" aria-selected={activeView === 'workspace'} className={`neu-nav-btn ${activeView === 'workspace' ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setActiveView('workspace')}>
+              <button type="button" role="tab" aria-selected={activeView === 'workspace'} className={`neu-nav-btn ${activeView === 'workspace' ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setActiveView('workspace')} data-tour="nav-workspace">
                 <LayoutDashboard size={14} />
                 <span>Workspace</span>
               </button>
-              <button type="button" role="tab" aria-selected={activeView === 'demo'} className={`neu-nav-btn ${activeView === 'demo' ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setActiveView('demo')}>
+              <button type="button" role="tab" aria-selected={activeView === 'demo'} className={`neu-nav-btn ${activeView === 'demo' ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setActiveView('demo')} data-tour="nav-demo">
                 <Globe size={14} />
                 <span>Verifier demo</span>
                 {verifierRequest && !external && !verifierResult && (
@@ -1301,7 +1327,7 @@ export function App() {
           {/* Third-party verifier demo ("Verify with Zeroara") */}
           {activeView === 'demo' && (
             <div className="pane-scroll">
-              <VerifierDemoSite request={verifierRequest} result={verifierResult} onStart={startVerifierRequest} onOpenZeroara={() => setActiveView('workspace')} onReset={cancelRequest} />
+              <VerifierDemoSite key={demoEpoch} request={verifierRequest} result={verifierResult} onStart={startVerifierRequest} onOpenZeroara={() => setActiveView('workspace')} onReset={cancelRequest} onStartTutorial={external ? undefined : startTutorial} />
             </div>
           )}
 
@@ -1310,7 +1336,7 @@ export function App() {
             {/* All six stages, always visible */}
             <div className="neu-card stepper-strip">
               {steps.map((item) => (
-                <StepItem key={item.n} index={item.n} title={item.title} detail={item.detail} state={item.state} current={stage === item.n} disabled={!reachable(item.n)} onClick={() => stepClick(item.n)} />
+                <StepItem key={item.n} tourId={`step-${item.n}`} index={item.n} title={item.title} detail={item.detail} state={item.state} current={stage === item.n} disabled={!reachable(item.n)} onClick={() => stepClick(item.n)} />
               ))}
             </div>
 
@@ -1369,6 +1395,7 @@ export function App() {
                     }}
                     onClick={() => fileInputRef.current?.click()}
                     className={`neu-dropzone fill ${isDragging ? 'dragging' : ''}`}
+                    data-tour="dropzone"
                     style={{ display: doc ? 'none' : 'flex' }}
                   >
                     <div style={{ width: '60px', height: '60px', borderRadius: '50%', backgroundColor: 'var(--bg-surface)', boxShadow: 'var(--shadow-extruded)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
@@ -1414,7 +1441,7 @@ export function App() {
                   </div>
 
                   {/* In-memory document canvas — scales to the available height */}
-                  <div className="canvas-stage" style={{ display: doc ? 'flex' : 'none' }}>
+                  <div className="canvas-stage" style={{ display: doc ? 'flex' : 'none' }} data-tour="canvas">
                     <canvas ref={canvasRef} style={{ display: stage >= 3 && viewMode === 'BURNED' && redactionResult ? 'none' : 'block' }} />
                     {stage >= 3 && viewMode === 'BURNED' && redactionResult && <img src={redactionResult.flattenedPngDataUrl} alt="Burned and flattened document raster" />}
                   </div>
@@ -1441,7 +1468,7 @@ export function App() {
                   </div>
 
                   {primaryAction && (
-                    <button type="button" className="neu-btn-primary" style={{ padding: '11px 16px', fontSize: '0.86rem', gap: '10px', width: '100%', justifyContent: 'center', flexShrink: 0 }} onClick={primaryAction.onClick} disabled={primaryAction.disabled}>
+                    <button type="button" className="neu-btn-primary" style={{ padding: '11px 16px', fontSize: '0.86rem', gap: '10px', width: '100%', justifyContent: 'center', flexShrink: 0 }} onClick={primaryAction.onClick} disabled={primaryAction.disabled} data-tour="primary-action">
                       {primaryAction.icon}
                       <span>{primaryAction.label}</span>
                     </button>
@@ -1596,7 +1623,7 @@ export function App() {
                         {!ocrRunning && doc && !pdfLocked && detectedFields.length === 0 && (
                           <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>Nothing was recognised. Try a sharper, well-lit photo of the front of the card, or open the token index below to mark targets by hand.</span>
                         )}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }} data-tour="targets">
                           {detectedFields.map((field) => {
                             const tone = field.action === 'PROVE_AND_BURN' ? 'active' : field.action === 'DIRECT_BURN' ? 'warn' : 'muted';
                             const Icon = field.action === 'PROVE_AND_BURN' ? Cpu : field.action === 'DIRECT_BURN' ? Flame : Eye;
@@ -1700,7 +1727,7 @@ export function App() {
                         <>
                           {proofResult ? (
                             proofVerified ? (
-                              <StatusBadge tone="ok">
+                              <StatusBadge tone="ok" tourId="proof-badge">
                                 <CheckCircle2 size={13} /> Proof Validated ({proofLatency ?? 0} ms)
                               </StatusBadge>
                             ) : proofVerified === false ? (
@@ -1738,7 +1765,7 @@ export function App() {
                           <KV label="Predicate" value={<span className={witnessTarget.satisfiesThreshold ? 'neu-tone-ok' : 'neu-tone-warn'}>{witnessTarget.satisfiesThreshold ? 'TRUE · meets requirement' : 'FALSE · cannot be proven'}</span>} />
                           <KV label="Bound to" value={`doc ${doc?.hashHex.slice(0, 10) ?? '—'}… · nonce ${enterpriseSpec.challengeNonce.slice(0, 10)}…`} />
                           {proofResult && (
-                            <button type="button" className="neu-btn-secondary" style={{ padding: '9px 14px', fontSize: '0.78rem', gap: '8px', justifyContent: 'center' }} onClick={() => setShowProofDetails(true)}>
+                            <button type="button" className="neu-btn-secondary" style={{ padding: '9px 14px', fontSize: '0.78rem', gap: '8px', justifyContent: 'center' }} onClick={() => setShowProofDetails(true)} data-tour="proof-details">
                               <Binary size={15} />
                               <span>View Cryptographic Proof Details</span>
                             </button>
@@ -1761,7 +1788,9 @@ export function App() {
                           <StatusBadge tone="ok">
                             <Fingerprint size={13} /> Master audit seal anchored
                           </StatusBadge>
-                          <HashBlock value={formatChunkedHash(masterSeal.sealHex)} onCopy={copySeal} copied={copiedSeal} />
+                          <div data-tour="seal">
+                            <HashBlock value={formatChunkedHash(masterSeal.sealHex)} onCopy={copySeal} copied={copiedSeal} />
+                          </div>
                           {external && verifierRequest && deliveryState !== 'idle' && (
                             <div className="neu-verified-well" style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                               <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.8rem', color: 'var(--accent-secondary)' }}>
@@ -1889,6 +1918,9 @@ export function App() {
           </>
         )}
       </Drawer>
+
+      {/* Guided walkthrough (overlay add-on for the verifier demo) */}
+      <TourOverlay run={tutorialRun} paused={showProofDetails} snapshot={tourSnapshot} onExit={() => setTutorialRun(0)} />
     </div>
   );
 }
