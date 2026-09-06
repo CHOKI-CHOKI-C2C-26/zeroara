@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Acme Onboarding · Zeroara integration playground</title>
+  <style>
+    :root { --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --brand: #2563eb; --ok: #059669; --bad: #dc2626; --bg: #f8fafc; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+    header { background: #fff; border-bottom: 1px solid var(--line); padding: 14px 28px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    header .brand { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.01em; }
+    header .tag { font-size: 0.74rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+    h1 { font-size: 1.35rem; margin: 0; }
+    h2 { font-size: 0.95rem; margin: 0; }
+    p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+    input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; }
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { font: inherit; font-size: 0.76rem; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+    .chip:hover { border-color: var(--brand); color: var(--brand); }
+    button.primary { font: inherit; font-weight: 700; padding: 12px 18px; border: 0; border-radius: 10px; background: var(--brand); color: #fff; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    button.primary:disabled { opacity: .6; cursor: wait; }
+    button.ghost { font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; font-size: 0.82rem; }
+    pre { margin: 0; background: #0f172a; color: #e2e8f0; padding: 12px 14px; border-radius: 10px; font-size: 0.74rem; overflow: auto; max-height: 260px; }
+    .status { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 12px; border: 1px solid var(--line); }
+    .status.idle { background: #f1f5f9; }
+    .status.pending { background: #eff6ff; border-color: #bfdbfe; }
+    .status.ok { background: #ecfdf5; border-color: #a7f3d0; }
+    .status.bad { background: #fef2f2; border-color: #fecaca; }
+    .status .big { font-weight: 800; font-size: 1rem; }
+    .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 0.82rem; border-bottom: 1px dashed var(--line); padding: 5px 0; }
+    .kv span:last-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; word-break: break-all; }
+    .gate { display: flex; justify-content: space-between; gap: 10px; font-size: 0.8rem; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+    .pass { color: var(--ok); font-weight: 700; } .fail { color: var(--bad); font-weight: 700; }
+    ul { margin: 0; padding-left: 18px; font-size: 0.84rem; }
+    .hint { font-size: 0.74rem; color: var(--muted); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8em; background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="brand">Acme Onboarding</span>
+      <span class="tag">example third-party site</span>
+    </div>
+    <span class="hint">This page is plain HTML + <code>zeroara.js</code>. It never sees the user's document.</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h1>Ask Zeroara to verify a condition</h1>
+      <p>Pick the document your users hold and the condition you need. Zeroara opens on the user's device, reads the document locally, burns the sensitive fields, proves the condition in zero knowledge and hands you back a redacted PDF plus a receipt.</p>
+
+      <div class="presets" id="presets">
+        <button class="chip" data-preset="aegis">Aegis Rentals · Age ≥ 18 (Aadhaar)</button>
+        <button class="chip" data-preset="apex">Apex Lending · Income ≥ USD 100,000</button>
+        <button class="chip" data-preset="payroll">Payroll check · Net pay ≥ INR 50,000</button>
+        <button class="chip" data-preset="campus">Campus portal · College ID (seal-only)</button>
+      </div>
+
+      <div class="row">
+        <label>Document
+          <select id="document">
+            <option value="aadhaar">Aadhaar card</option>
+            <option value="pan">PAN card</option>
+            <option value="college_id">College / student ID</option>
+            <option value="bank_statement">Bank statement</option>
+            <option value="salary_slip">Salary slip</option>
+            <option value="tax_form">Tax form</option>
+            <option value="income_accredited">Income certificate (accredited investor)</option>
+            <option value="generic_id">Generic identity document</option>
+            <option value="generic_financial">Generic financial document</option>
+          </select>
+        </label>
+        <label>Requester (your site)
+          <input id="requester" value="Aegis Rentals" />
+        </label>
+      </div>
+      <div class="row3">
+        <label>Condition field <input id="field" value="Age" /></label>
+        <label>at least <input id="value" type="number" value="18" min="0" /></label>
+        <label>unit <input id="unit" value="years" /></label>
+      </div>
+      <label>Purpose shown to the user <input id="purpose" value="Renters must be 18 or older" /></label>
+      <label>Open Zeroara as
+        <select id="mode">
+          <option value="auto">auto (popup, falls back to an overlay)</option>
+          <option value="popup">popup window</option>
+          <option value="iframe">overlay inside this page</option>
+        </select>
+      </label>
+
+      <button class="primary" id="verify">Verify with Zeroara</button>
+
+      <h2>The call this page makes</h2>
+      <pre id="snippet"></pre>
+      <span class="hint">Docs: <a href="/docs/INTEGRATION.md" target="_blank" rel="noreferrer">docs/INTEGRATION.md</a> in the repository · SDK: <code id="sdkurl"></code></span>
+    </section>
+
+    <section class="card">
+      <h2>What your site receives</h2>
+      <div class="status idle" id="status">
+        <div>
+          <div class="big">Nothing yet</div>
+          <div class="hint">Click “Verify with Zeroara”. The user completes the flow on their own device.</div>
+        </div>
+      </div>
+      <div id="details" hidden>
+        <div class="kv"><span>Request id</span><span id="r-id"></span></div>
+        <div class="kv"><span>Document</span><span id="r-doc"></span></div>
+        <div class="kv"><span>Claim proven</span><span id="r-claim"></span></div>
+        <div class="kv"><span>Challenge nonce</span><span id="r-nonce"></span></div>
+        <div class="kv"><span>Proof</span><span id="r-proof"></span></div>
+        <div class="kv"><span>Master audit seal</span><span id="r-seal"></span></div>
+        <div class="kv"><span>Redacted PDF</span><span id="r-pdf"></span></div>
+        <div class="kv"><span>Original document received</span><span>0 bytes</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+          <button class="ghost" id="dl-pdf">Download redacted PDF</button>
+          <button class="ghost" id="dl-receipt">Download receipt (.json)</button>
+          <button class="ghost" id="audit">Run independent audit (5 checks)</button>
+          <button class="ghost" id="reset">Reset</button>
+        </div>
+        <div id="gates" style="margin-top:10px"></div>
+        <details style="margin-top:10px"><summary class="hint">Raw receipt (audit package)</summary><pre id="raw"></pre></details>
+      </div>
+    </section>
+  </main>
+
+  <script src="/sdk/zeroara.js"></script>
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var PRESETS = {
+        aegis:   { document: 'aadhaar', requester: 'Aegis Rentals', field: 'Age', value: 18, unit: 'years', purpose: 'Renters must be 18 or older' },
+        apex:    { document: 'income_accredited', requester: 'Apex Lending', field: 'Net income', value: 100000, unit: 'USD', purpose: 'Accredited-investor onboarding' },
+        payroll: { document: 'salary_slip', requester: 'HomeLease Ltd', field: 'Net pay', value: 50000, unit: 'INR', purpose: 'Tenant affordability check' },
+        campus:  { document: 'college_id', requester: 'Campus Portal', field: '', value: 0, unit: '', purpose: 'Student-only access', sealOnly: true },
+      };
+      var SEAL_ONLY = { pan: 1, college_id: 1, generic_id: 1 };
+      var last = null;
+
+      function options() {
+        var doc = $('document').value;
+        var sealOnly = !!SEAL_ONLY[doc];
+        var o = { document: doc, requester: $('requester').value, purpose: $('purpose').value, mode: $('mode').value };
+        if (!sealOnly && $('value').value !== '') {
+          o.claim = { field: $('field').value || undefined, op: '>=', value: Number($('value').value), unit: $('unit').value || undefined };
+        }
+        return o;
+      }
+      function renderSnippet() {
+        var o = options();
+        $('snippet').textContent = '<script src="' + Zeroara.origin + '/sdk/zeroara.js"><\/script>\n\n' +
+          'const result = await Zeroara.verify(' + JSON.stringify(o, null, 2) + ');\n\n' +
+          'if (result.ok) {\n  // result.bundle           -> cryptographic receipt\n  // result.redactedPdfBytes -> flattened, redacted PDF\n}';
+        var sealOnly = !!SEAL_ONLY[o.document];
+        $('field').disabled = $('value').disabled = $('unit').disabled = sealOnly;
+      }
+      function applyPreset(p) {
+        $('document').value = p.document; $('requester').value = p.requester; $('field').value = p.field;
+        $('value').value = p.sealOnly ? '' : p.value; $('unit').value = p.unit; $('purpose').value = p.purpose;
+        renderSnippet();
+      }
+      function setStatus(kind, big, small) {
+        var s = $('status'); s.className = 'status ' + kind;
+        s.innerHTML = '<div><div class="big">' + big + '</div><div class="hint">' + small + '</div></div>';
+      }
+      function short(h) { return h ? String(h).slice(0, 18) + '…' : '—'; }
+
+      Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) {
+        b.addEventListener('click', function () { applyPreset(PRESETS[b.getAttribute('data-preset')]); });
+      });
+      ['document', 'requester', 'field', 'value', 'unit', 'purpose', 'mode'].forEach(function (id) { $(id).addEventListener('input', renderSnippet); $(id).addEventListener('change', renderSnippet); });
+      $('sdkurl').textContent = Zeroara.origin + '/sdk/zeroara.js';
+      renderSnippet();
+
+      $('verify').addEventListener('click', async function () {
+        var o = options();
+        $('verify').disabled = true;
+        $('details').hidden = true; $('gates').innerHTML = '';
+        setStatus('pending', 'Waiting for the user to finish in Zeroara…', 'Document type: ' + o.document + (o.claim ? ' · claim: ' + (o.claim.field || 'value') + ' ≥ ' + o.claim.value + ' ' + (o.claim.unit || '') : ' · seal-only'));
+        try {
+          var result = await Zeroara.verify(o);
+          last = result;
+          var b = result.bundle;
+          if (result.ok) {
+            setStatus('ok', '✔ Verified: ' + (o.claim ? (o.claim.field || 'Value') + ' ≥ ' + o.claim.value + ' ' + (o.claim.unit || '') : 'redaction sealed'), 'Zero PII retained. 0 bytes of sensitive data received. The receipt satisfies every requirement of this request.');
+          } else {
+            setStatus('bad', '✖ Not accepted', result.checks.reasons.join(' '));
+          }
+          $('r-id').textContent = result.requestId;
+          $('r-doc').textContent = (b.scenario && b.scenario.label) || b.enterpriseRequirement.documentCategory;
+          $('r-claim').textContent = b.redactionMode === 'PROOF_BACKED' ? (b.enterpriseRequirement.targetField + ' ≥ ' + b.enterpriseRequirement.thresholdValue + ' ' + b.enterpriseRequirement.currency) : 'none (seal-only)';
+          $('r-nonce').textContent = (b.enterpriseRequirement.challengeNonce === result.request.nonce ? 'matched · ' : 'MISMATCH · ') + short(result.request.nonce);
+          $('r-proof').textContent = b.zeroKnowledgeProof ? (b.zeroKnowledgeProof.verified ? 'Groth16 · verified' : 'Groth16 · NOT verified') : 'none';
+          $('r-seal').textContent = short(b.masterAuditSeal.sealHex);
+          $('r-pdf').textContent = result.fileName + ' · ' + Math.round(result.redactedPdfBytes.length / 1024) + ' KB';
+          $('raw').textContent = JSON.stringify(b, null, 2);
+          $('details').hidden = false;
+        } catch (err) {
+          setStatus('bad', '✖ ' + (err.code || 'Error'), err.message);
+        } finally {
+          $('verify').disabled = false;
+        }
+      });
+
+      function download(bytes, name, type) {
+        var url = URL.createObjectURL(new Blob([bytes], { type: type }));
+        var a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      }
+      $('dl-pdf').addEventListener('click', function () { if (last) download(last.redactedPdfBytes, last.fileName, 'application/pdf'); });
+      $('dl-receipt').addEventListener('click', function () { if (last) download(new TextEncoder().encode(JSON.stringify(last.bundle, null, 2)), 'zeroara-receipt-' + last.requestId + '.json', 'application/json'); });
+      $('audit').addEventListener('click', async function () {
+        if (!last) return;
+        $('gates').innerHTML = '<span class="hint">Auditing in a hidden Zeroara frame…</span>';
+        try {
+          var report = await Zeroara.audit(last.bundle);
+          $('gates').innerHTML = '<div class="kv"><span><strong>Independent audit</strong> · ' + report.totalDurationMs + ' ms</span><span class="' + (report.overallValid ? 'pass' : 'fail') + '">' + (report.overallValid ? 'GENUINE' : 'REJECTED') + '</span></div>' +
+            report.gates.map(function (g) { return '<div class="gate"><span>' + g.gateNumber + '. ' + g.gateName + '</span><span class="' + (g.passed ? 'pass' : 'fail') + '">' + (g.passed ? 'PASS' : 'FAIL') + ' · ' + g.latencyMs + ' ms</span></div>'; }).join('');
+        } catch (err) { $('gates').innerHTML = '<span class="fail">' + err.message + '</span>'; }
+      });
+      $('reset').addEventListener('click', function () { last = null; $('details').hidden = true; $('gates').innerHTML = ''; setStatus('idle', 'Nothing yet', 'Click “Verify with Zeroara”. The user completes the flow on their own device.'); });
+    })();
+  </script>
+</body>
+</html>

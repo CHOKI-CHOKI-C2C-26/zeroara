@@ -206,3 +206,49 @@ export function ChecklistItem({
     </button>
   );
 }
+
+/** Horizontal stepper node: all stages visible at once in a single strip. */
+export function StepItem({
+  index,
+  title,
+  detail,
+  state,
+  current,
+  onClick,
+  disabled,
+}: {
+  index: number;
+  title: string;
+  detail: React.ReactNode;
+  state: 'done' | 'active' | 'pending' | 'skipped';
+  current: boolean;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  const tone: Tone = state === 'done' ? 'ok' : state === 'active' ? 'active' : 'muted';
+  const Icon = state === 'done' ? CheckCircle2 : state === 'active' ? CircleDot : Circle;
+  return (
+    <button type="button" className={`neu-step-item ${current ? 'current' : ''}`} onClick={onClick} disabled={disabled} aria-current={current ? 'step' : undefined}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+        <span className={`neu-check-icon ${toneClass(tone)}`} style={{ width: '22px', height: '22px' }}>
+          <Icon size={13} />
+        </span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.66rem', color: 'var(--fg-dim)' }}>0{index}</span>
+        <span
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontWeight: 700,
+            fontSize: '0.76rem',
+            color: current ? 'var(--accent)' : 'var(--fg-primary)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {title}
+        </span>
+      </span>
+      <span style={{ fontSize: '0.66rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{detail}</span>
+    </button>
+  );
+}

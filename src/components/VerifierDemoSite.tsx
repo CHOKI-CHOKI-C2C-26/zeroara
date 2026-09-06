@@ -14,24 +14,15 @@ import {
 } from 'lucide-react';
 import type { ZeroaraAuditPackage, VerifierAuditReport } from '../layers';
 import { runEnterpriseAudit, downloadFile, formatChunkedHash } from '../layers';
+import type { ActiveVerifierRequest } from '../integration/protocol';
 import { Drawer, KV, StatusBadge } from './ui';
+
+export type VerifierRequest = ActiveVerifierRequest;
 
 /* A realistic third-party website ("Aegis Rentals") that gates a booking on
    age >= 18. It never receives the document: it issues a challenge nonce and a
    claim, receives back only the flattened redacted PDF + the cryptographic
    receipt, and verifies them independently. */
-
-export interface VerifierRequest {
-  id: string;
-  requester: string;
-  purpose: string;
-  claim: string;
-  scenarioId: string;
-  thresholdValue: number;
-  unit: string;
-  nonce: string;
-  issuedAt: string;
-}
 
 export interface VerifierResult {
   pkg: ZeroaraAuditPackage;
@@ -265,6 +256,13 @@ export function VerifierDemoSite({
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.72rem', color: 'var(--fg-dim)' }}>
           <KeyRound size={12} />
           <span>Each verification issues a fresh challenge nonce bound into the proof session — a bundle cannot be replayed for a different booking.</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.74rem', color: 'var(--fg-muted)', flexWrap: 'wrap' }}>
+          <span>Add this to your own site:</span>
+          <code className="neu-hash-pill" style={{ fontSize: '0.68rem' }}>&lt;script src="{window.location.origin}/sdk/zeroara.js"&gt;&lt;/script&gt;</code>
+          <a href="/demo/index.html" target="_blank" rel="noreferrer" className="neu-pill-btn" style={{ fontSize: '0.7rem', padding: '3px 9px', textDecoration: 'none' }}>
+            Open the integration playground ↗
+          </a>
         </div>
       </div>
 
