@@ -668,3 +668,89 @@ pre {
 .neu-dropzone.dragging {
   box-shadow: var(--shadow-inset-deep), 0 0 0 2px var(--accent);
 }
+
+/* ===================================================================
+   Progressive-disclosure primitives (select, accordion, drawer, checklist)
+   Same neumorphic physics: dual shadows, no borders, pillowed radii.
+   =================================================================== */
+.neu-select-wrap { position: relative; width: 100%; }
+.neu-select {
+  appearance: none; -webkit-appearance: none;
+  width: 100%;
+  font-family: var(--font-body); font-size: 0.84rem; font-weight: 600;
+  color: var(--fg-primary);
+  background-color: var(--bg-surface);
+  box-shadow: var(--shadow-inset);
+  border: none; border-radius: var(--radius-btn);
+  padding: 11px 40px 11px 14px;
+  cursor: pointer;
+  transition: box-shadow 300ms ease-out;
+}
+.neu-select:focus { outline: none; box-shadow: var(--shadow-inset-deep), 0 0 0 2px var(--accent); }
+.neu-select:disabled { opacity: 0.6; cursor: not-allowed; }
+.neu-select-chevron { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--fg-muted); }
+
+.neu-accordion { background-color: var(--bg-surface); box-shadow: var(--shadow-inset-sm); border-radius: var(--radius-btn); overflow: hidden; }
+.neu-accordion-head {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 11px 14px; background: transparent; border: none; cursor: pointer; text-align: left;
+  font-family: var(--font-display); font-size: 0.8rem; font-weight: 700; color: var(--fg-primary);
+  transition: color 200ms ease-out;
+}
+.neu-accordion-head:hover { color: var(--accent); }
+.neu-accordion-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-btn); }
+.neu-accordion-body { padding: 0 14px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.neu-drawer-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(61, 72, 82, 0.38); backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.neu-drawer {
+  width: min(780px, 100%); max-height: min(86vh, 920px); overflow-y: auto;
+  background-color: var(--bg-surface); border-radius: var(--radius-card);
+  box-shadow: var(--shadow-extruded-hover); padding: 24px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+
+.neu-check-item {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 12px; border: none; text-align: left; cursor: pointer;
+  border-radius: var(--radius-btn); background-color: var(--bg-surface);
+  box-shadow: var(--shadow-extruded-sm); transition: all 300ms ease-out;
+}
+.neu-check-item:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-extruded); }
+.neu-check-item.current { box-shadow: var(--shadow-inset); }
+.neu-check-item:disabled { cursor: default; opacity: 0.72; }
+.neu-check-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.neu-check-icon {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background-color: var(--bg-surface); box-shadow: var(--shadow-inset-sm);
+}
+.neu-tone-ok { color: var(--accent-secondary) !important; }
+.neu-tone-active { color: var(--accent) !important; }
+.neu-tone-muted { color: var(--fg-dim) !important; }
+.neu-tone-warn { color: var(--accent-rose) !important; }
+
+.neu-kv { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 0.8rem; }
+.neu-kv-label { color: var(--fg-muted); flex-shrink: 0; }
+.neu-kv-value { font-family: var(--font-mono); font-weight: 700; color: var(--fg-primary); text-align: right; word-break: break-all; }
+
+/* Third-party verifier demo ("website inside a browser frame") */
+.demo-frame { background-color: var(--bg-surface); border-radius: var(--radius-card); box-shadow: var(--shadow-extruded); overflow: hidden; }
+.demo-chrome { display: flex; align-items: center; gap: 10px; padding: 12px 18px; box-shadow: 0 6px 12px rgb(163, 177, 198, 0.35); }
+.demo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bg-surface); box-shadow: var(--shadow-inset-sm); }
+.demo-url { flex: 1; font-family: var(--font-mono); font-size: 0.74rem; color: var(--fg-muted); background: var(--bg-surface); box-shadow: var(--shadow-inset-sm); border-radius: var(--radius-pill); padding: 6px 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.demo-body { padding: 28px; display: flex; flex-direction: column; gap: 22px; }
+.demo-hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; align-items: stretch; }
+@media (max-width: 960px) { .demo-hero { grid-template-columns: 1fr; } }
+.demo-success-ring {
+  width: 84px; height: 84px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background-color: var(--bg-surface); box-shadow: var(--shadow-extruded); color: var(--accent-secondary);
+}
+
+.workspace-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.95fr); gap: 20px; align-items: start; }
+@media (max-width: 1024px) { .workspace-grid { grid-template-columns: 1fr; } }
+@keyframes neu-spin { to { transform: rotate(360deg); } }
+.spin { animation: neu-spin 1s linear infinite; }

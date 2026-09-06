@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import './App.css';
 import {
   sha256Hex,
@@ -15,9 +15,9 @@ import {
   generateIncomeThresholdProof,
   verifyIncomeProof,
   computeMasterAuditSeal,
-  verifyAuditPackage,
   type ExtractedSpatialToken,
   type ClassifiedTarget,
+  type TargetAction,
   type RedactionResult,
   type Groth16ProofResult,
   type MasterSealResult,
@@ -37,10 +37,8 @@ import {
   Crosshair,
   ArrowLeft,
   ArrowRight,
-  Plus,
   Trash2,
   SlidersHorizontal,
-  ChevronDown,
   Flame,
   Download,
   Eye,
@@ -50,7 +48,16 @@ import {
   Fingerprint,
   AlertTriangle,
   Binary,
+  ExternalLink,
+  Globe,
+  LayoutDashboard,
+  ScanLine,
+  Loader2,
+  KeyRound,
+  Info,
 } from 'lucide-react';
+import { Accordion, Drawer, Select, StatusBadge, KV, HashBlock, ChecklistItem } from './components/ui';
+import { VerifierDemoSite, type VerifierRequest, type VerifierResult } from './components/VerifierDemoSite';
 import {
   VerifierPortalView,
   HardwareEnclaveView,
@@ -155,6 +162,44 @@ function resolveUploadMimeType(file: File): string | null {
   return IMAGE_MIME_BY_EXTENSION[extension] ?? (extension === 'pdf' ? 'application/pdf' : null);
 }
 
+// One-click verification requirements per document type (single-select in Stage 1).
+const REQUIREMENT_PRESETS: Record<string, { label: string; threshold: number; unit: string }[]> = {
+  aadhaar: [
+    { label: 'Age ≥ 18 years', threshold: 18, unit: 'years' },
+    { label: 'Age ≥ 21 years', threshold: 21, unit: 'years' },
+  ],
+  income_accredited: [
+    { label: 'Net income ≥ USD 100,000', threshold: 100000, unit: 'USD' },
+    { label: 'Net income ≥ USD 150,000', threshold: 150000, unit: 'USD' },
+    { label: 'Net income ≥ USD 80,000', threshold: 80000, unit: 'USD' },
+  ],
+  salary_slip: [
+    { label: 'Net pay ≥ INR 50,000', threshold: 50000, unit: 'INR' },
+    { label: 'Net pay ≥ INR 1,00,000', threshold: 100000, unit: 'INR' },
+  ],
+  bank_statement: [
+    { label: 'Balance ≥ INR 50,000', threshold: 50000, unit: 'INR' },
+    { label: 'Balance ≥ INR 2,00,000', threshold: 200000, unit: 'INR' },
+  ],
+  tax_form: [
+    { label: 'Declared income ≥ INR 2,50,000', threshold: 250000, unit: 'INR' },
+    { label: 'Declared income ≥ INR 5,00,000', threshold: 500000, unit: 'INR' },
+  ],
+  generic_financial: [
+    { label: 'Amount ≥ INR 50,000', threshold: 50000, unit: 'INR' },
+    { label: 'Amount ≥ INR 1,00,000', threshold: 100000, unit: 'INR' },
+  ],
+};
+
+const ACTION_LABEL: Record<TargetAction, string> = {
+  PROVE_AND_BURN: 'prove + burn',
+  DIRECT_BURN: 'burn',
+  DETECT_ONLY: 'detect only',
+};
+
+const SMALL_LABEL = { fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)' } as const;
+const LABEL_STYLE = { display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)' } as const;
+
 export function App() {
   const [stage, setStage] = useState<StageNumber>(1);
   const [doc, setDoc] = useState<IngestedDoc | null>(null);
@@ -167,7 +212,6 @@ export function App() {
   const [ocrRunning, setOcrRunning] = useState(false);
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(null);
   const [showHudOverlays, setShowHudOverlays] = useState(true);
-  const [showAllTokens, setShowAllTokens] = useState(false);
 
   // Phase 3 Burning & Flattening State
   const [isBurning, setIsBurning] = useState(false);
@@ -188,13 +232,12 @@ export function App() {
   const [isSealing, setIsSealing] = useState(false);
   const [masterSeal, setMasterSeal] = useState<MasterSealResult | null>(null);
   const [auditPackage, setAuditPackage] = useState<ZeroaraAuditPackage | null>(null);
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [auditCheckResult, setAuditCheckResult] = useState<{
-    sealValid: boolean;
-    proofValid: boolean;
-    isTampered: boolean;
-    testedAt: string;
-  } | null>(null);
+  // Progressive disclosure + external verifier handshake
+  const [activeView, setActiveView] = useState<'workspace' | 'demo'>('workspace');
+  const [verifierRequest, setVerifierRequest] = useState<VerifierRequest | null>(null);
+  const [verifierResult, setVerifierResult] = useState<VerifierResult | null>(null);
+  const [showProofDetails, setShowProofDetails] = useState(false);
+  const [customThreshold, setCustomThreshold] = useState(false);
 
   // Real OCR & Extraction Pipeline State
   const [detectedFields, setDetectedFields] = useState<ClassifiedTarget[]>([]);
@@ -437,7 +480,6 @@ export function App() {
       setProofVerifyLatencyMs(null);
       setMasterSeal(null);
       setAuditPackage(null);
-      setAuditCheckResult(null);
       if (reason) {
         setInvalidationMessage(reason);
       }
@@ -603,38 +645,6 @@ export function App() {
     }
   };
 
-  // Interactive Enterprise Auditor Verification Simulation
-  const simulateAuditVerification = async (tampered: boolean = false) => {
-    if (!auditPackage) return;
-    setIsAuditing(true);
-    try {
-      let pkgToTest = auditPackage;
-      if (tampered) {
-        // Tamper 1 bounding box coordinate by 1px
-        pkgToTest = {
-          ...auditPackage,
-          sanitizedDocument: {
-            ...auditPackage.sanitizedDocument,
-            burnedBoundingBoxes: auditPackage.sanitizedDocument.burnedBoundingBoxes.map((b, i) =>
-              i === 0 ? { ...b, x: b.x + 1 } : b
-            ),
-          },
-        };
-      }
-      const res = await verifyAuditPackage(pkgToTest);
-      setAuditCheckResult({
-        sealValid: res.sealValid,
-        proofValid: res.proofValid,
-        isTampered: tampered,
-        testedAt: new Date().toLocaleTimeString(),
-      });
-    } catch (err) {
-      console.error('Audit verification error:', err);
-    } finally {
-      setIsAuditing(false);
-    }
-  };
-
   const handleDownloadAuditPackage = () => {
     if (!auditPackage) return;
     const jsonStr = JSON.stringify(auditPackage, null, 2);
@@ -718,6 +728,7 @@ export function App() {
     const params = new URLSearchParams(window.location.search);
     const viewParam = params.get('view')?.toUpperCase();
     if (viewParam === 'VERIFIER') setStage(6);
+    else if (viewParam === 'DEMO') setActiveView('demo');
     else if (viewParam === 'ENCLAVE') setStage(7);
     else if (viewParam === 'TRANSPORT') setStage(8);
 
@@ -849,15 +860,307 @@ export function App() {
     setTimeout(() => setCopiedRedacted(false), 2000);
   };
 
-  const regenerateNonce = () => {
+  const makeNonce = () => {
     const arr = new Uint8Array(12);
     crypto.getRandomValues(arr);
     let hex = '0x';
     arr.forEach((b) => (hex += b.toString(16).padStart(2, '0')));
-    setEnterpriseSpec((prev) => ({ ...prev, challengeNonce: hex }));
+    return hex;
+  };
+
+  const regenerateNonce = () => {
+    setEnterpriseSpec((prev) => ({ ...prev, challengeNonce: makeNonce() }));
+  };
+
+  // Full workspace reset: document, OCR output, rasters, and every downstream artefact.
+  const clearDocument = () => {
+    setDoc(null);
+    setDetectedFields([]);
+    setExtractedTokens([]);
+    setOcrTelemetry(null);
+    setSelectedFieldId(null);
+    setRedactionResult(null);
+    setViewMode('ORIGINAL');
+    setPdfPassword('');
+    setPdfPasswordDraft('');
+    setPdfLocked(null);
+    setProofResult(null);
+    setProofVerified(null);
+    setProofVerifyLatencyMs(null);
+    setProverError(null);
+    setInvalidationMessage(null);
+    setMasterSeal(null);
+    setAuditPackage(null);
+    setShowProofDetails(false);
+    setShowWitnessSecret(false);
+    pageRastersRef.current = new Map();
+    cleanCanvasDataRef.current = null;
+    setTotalPages(1);
+    setCurrentPage(1);
+    setStage(1);
+  };
+
+  // Change only the numeric requirement: re-rank targets against it and drop
+  // any proof/seal that was bound to the previous threshold.
+  const setThresholdValue = (threshold: number, unit?: string) => {
+    setEnterpriseSpec((prev) => ({ ...prev, thresholdValue: threshold, currency: unit ?? prev.currency }));
+    if (extractedTokens.length > 0) {
+      const targets = classifyForScenario(extractedTokens, scenario, { thresholdValue: threshold });
+      setDetectedFields(targets);
+    }
+    invalidateDownstreamState('Requirement changed — the proof and seal were cleared. Re-run from Stage 3.');
+  };
+
+  const applyRequirementPreset = (value: string) => {
+    if (value === 'custom') {
+      setCustomThreshold(true);
+      return;
+    }
+    if (value === 'seal') return;
+    const preset = (REQUIREMENT_PRESETS[scenario.id] ?? [])[Number(value)];
+    if (!preset) return;
+    setCustomThreshold(false);
+    setThresholdValue(preset.threshold, preset.unit);
+  };
+
+  // "Verify with Zeroara" handshake: the relying party pre-configures the
+  // workspace (document type, claim, fresh challenge nonce). Nothing about the
+  // user or the document is known to it at this point.
+  const startVerifierRequest = () => {
+    const nonce = makeNonce();
+    const requester = 'Aegis Rentals';
+    const purpose = 'Age-gated rental booking — renter must be 18 or older';
+    clearDocument();
+    applyScenario('aadhaar');
+    setEnterpriseSpec((prev) => ({
+      ...prev,
+      requesterName: requester,
+      purpose,
+      targetField: 'Date of Birth',
+      predicate: '>= (Greater than or equal to)',
+      thresholdValue: 18,
+      currency: 'years',
+      challengeNonce: nonce,
+    }));
+    setCustomThreshold(false);
+    setVerifierRequest({
+      id: `AR-${nonce.slice(2, 8).toUpperCase()}`,
+      requester,
+      purpose,
+      claim: 'Age ≥ 18',
+      scenarioId: 'aadhaar',
+      thresholdValue: 18,
+      unit: 'years',
+      nonce,
+      issuedAt: new Date().toISOString(),
+    });
+    setVerifierResult(null);
+    setInvalidationMessage(null);
+    setActiveView('workspace');
+    setStage(1);
+  };
+
+  // Hand the bundle back: the relying party receives ONLY the flattened
+  // redacted PDF and the audit package (receipt) — never the original bytes.
+  const returnToVerifier = () => {
+    if (!verifierRequest || !auditPackage || !redactionResult) return;
+    setVerifierResult({
+      pkg: auditPackage,
+      pdfBytes: redactionResult.redactedPdfBytes,
+      fileName: `${(doc?.fileName ?? 'document').replace(/\.[^.]+$/, '')}_REDACTED.pdf`,
+      receivedAt: new Date().toISOString(),
+    });
+    setActiveView('demo');
+  };
+
+  const resetVerifierDemo = () => {
+    setVerifierRequest(null);
+    setVerifierResult(null);
+  };
+
+  const copySeal = () => {
+    if (!masterSeal) return;
+    navigator.clipboard.writeText(masterSeal.sealHex);
+    setCopiedSeal(true);
+    setTimeout(() => setCopiedSeal(false), 2000);
+  };
+
+  const copyProof = () => {
+    if (!proofResult) return;
+    navigator.clipboard.writeText(JSON.stringify({ proof: proofResult.proof, publicSignals: proofResult.publicSignals }, null, 2));
+    setCopiedProof(true);
+    setTimeout(() => setCopiedProof(false), 2000);
+  };
+
+  const selectTarget = (field: ClassifiedTarget) => {
+    setSelectedFieldId(field.id);
+    if (field.page !== currentPage) {
+      setCurrentPage(field.page);
+      renderCurrentPage(field.page);
+    }
   };
 
   const witnessTarget = detectedFields.find((f) => f.action === 'PROVE_AND_BURN');
+  const needsProof = scenarioProofBacked && !!witnessTarget;
+  const burnableCount = detectedFields.filter((f) => f.action !== 'DETECT_ONLY').length;
+  const requirementText = scenarioProofBacked
+    ? `${enterpriseSpec.targetField} ≥ ${enterpriseSpec.thresholdValue.toLocaleString()} ${enterpriseSpec.currency}`.trim()
+    : 'Seal-only redaction · no numeric claim';
+  const engineLine =
+    stage >= 3 && viewMode === 'BURNED'
+      ? 'Flattened, non-extractable raster'
+      : ocrTelemetry
+        ? ocrTelemetry.engineName
+        : suryaStatus.ready
+          ? 'Surya OCR · local sidecar ready'
+          : suryaStatus.online
+            ? 'Surya OCR · warming up…'
+            : 'Surya offline · Tesseract fallback';
+  const presets = REQUIREMENT_PRESETS[scenario.id] ?? [];
+  const presetIndex = presets.findIndex((p) => p.threshold === enterpriseSpec.thresholdValue && p.unit === enterpriseSpec.currency);
+  const requirementValue = !scenarioProofBacked ? 'seal' : customThreshold || presetIndex < 0 ? 'custom' : String(presetIndex);
+  const requirementOptions = scenarioProofBacked
+    ? [...presets.map((p, i) => ({ value: String(i), label: p.label })), { value: 'custom', label: 'Custom threshold…' }]
+    : [{ value: 'seal', label: 'Seal-only redaction (no numeric claim)' }];
+  const redactedFileName = `${(doc?.fileName ?? 'document').replace(/\.[^.]+$/, '')}_REDACTED.pdf`;
+  const proofLatency = proofVerifyLatencyMs ?? proofResult?.verificationLatencyMs ?? null;
+
+  const downloadRedactedPdf = () => {
+    if (!redactionResult) return;
+    downloadFile(redactionResult.redactedPdfBytes, redactedFileName, 'application/pdf');
+  };
+
+  // Which checklist rows can be opened. Navigation only — never skips work.
+  const reachable = (n: StageNumber): boolean => {
+    switch (n) {
+      case 1:
+        return true;
+      case 2:
+        return !!doc;
+      case 3:
+        return !!redactionResult;
+      case 4:
+        return !!redactionResult && (!!proofResult || !needsProof || stage >= 4);
+      case 5:
+        return !!masterSeal;
+      case 6:
+        return !!auditPackage;
+      default:
+        return false;
+    }
+  };
+
+  const checklist: { n: StageNumber; title: string; state: 'done' | 'active' | 'pending'; detail: string }[] = [
+    {
+      n: 1,
+      title: 'Ingest',
+      state: doc ? 'done' : stage === 1 ? 'active' : 'pending',
+      detail: doc ? `${doc.fileName} · ${(doc.fileSizeBytes / 1024).toFixed(0)} KB · SHA-256 anchored` : 'Upload a document or load a specimen',
+    },
+    {
+      n: 2,
+      title: 'Detect & classify',
+      state: ocrRunning ? 'active' : detectedFields.length > 0 ? 'done' : stage === 2 ? 'active' : 'pending',
+      detail: ocrRunning
+        ? 'Reading the document locally…'
+        : detectedFields.length > 0
+          ? `${detectedFields.length} targets · ${burnableCount} to burn`
+          : doc
+            ? 'No targets detected yet'
+            : 'Runs automatically after ingest',
+    },
+    {
+      n: 3,
+      title: 'Burn & flatten',
+      state: redactionResult ? 'done' : isBurning || stage === 3 ? 'active' : 'pending',
+      detail: redactionResult
+        ? `${redactionResult.burnedZonesCount} zones burned · ${redactionResult.textStreamCount} text streams purged`
+        : 'Solid-black pixel redaction, non-extractable PDF',
+    },
+    {
+      n: 4,
+      title: needsProof ? 'Prove in zero knowledge' : 'Prove (seal-only)',
+      state: needsProof
+        ? proofResult && proofVerified
+          ? 'done'
+          : isProving || stage === 4
+            ? 'active'
+            : 'pending'
+        : masterSeal || stage >= 4
+          ? 'done'
+          : 'pending',
+      detail: needsProof
+        ? proofResult
+          ? proofVerified
+            ? `Proof validated · ${proofLatency ?? 0} ms`
+            : 'Proof did not verify'
+          : requirementText
+        : 'No numeric claim for this document type',
+    },
+    {
+      n: 5,
+      title: 'Seal & bundle',
+      state: masterSeal ? 'done' : isSealing || stage === 5 ? 'active' : 'pending',
+      detail: masterSeal ? `Seal ${masterSeal.sealHex.slice(0, 14)}… · audit package ready` : 'Binds raster hash, geometry, commitment and proof',
+    },
+    {
+      n: 6,
+      title: verifierRequest ? `Hand back to ${verifierRequest.requester}` : 'Verify independently',
+      state: verifierResult ? 'done' : stage === 6 ? 'active' : 'pending',
+      detail: verifierRequest
+        ? verifierResult
+          ? 'Bundle delivered · 0 bytes of PII'
+          : 'Return the proof-backed bundle to the requester'
+        : auditPackage
+          ? 'Run the 5-gate verifier portal'
+          : 'Available after sealing',
+    },
+  ];
+
+  type Action = { label: string; icon: ReactNode; onClick: () => void; disabled?: boolean };
+  const primaryAction: Action | null = (() => {
+    switch (stage) {
+      case 1:
+        return doc
+          ? { label: ocrRunning ? 'Reading document…' : 'Review detected targets', icon: <Crosshair size={16} />, onClick: () => setStage(2), disabled: ocrRunning }
+          : null;
+      case 2:
+        return {
+          label: isBurning ? 'Burning pixels…' : 'Burn & flatten',
+          icon: <Flame size={16} />,
+          onClick: executePixelBurn,
+          disabled: isBurning || ocrRunning || burnableCount === 0,
+        };
+      case 3:
+        return needsProof
+          ? { label: isProving ? 'Generating proof…' : 'Generate zero-knowledge proof', icon: <Cpu size={16} />, onClick: executeZkProof, disabled: isProving }
+          : { label: 'Continue · seal-only', icon: <ArrowRight size={16} />, onClick: executeZkProof };
+      case 4:
+        return needsProof && !proofResult
+          ? { label: isProving ? 'Generating proof…' : 'Generate zero-knowledge proof', icon: <Cpu size={16} />, onClick: executeZkProof, disabled: isProving }
+          : {
+              label: isSealing ? 'Sealing…' : 'Seal & bundle',
+              icon: <Fingerprint size={16} />,
+              onClick: executeMasterSeal,
+              disabled: isSealing || !redactionResult || (needsProof && !proofVerified),
+            };
+      case 5:
+        return verifierRequest
+          ? { label: `Return to ${verifierRequest.requester} with proof`, icon: <ExternalLink size={16} />, onClick: returnToVerifier, disabled: !auditPackage }
+          : { label: 'Verify in the auditor portal', icon: <ShieldCheck size={16} />, onClick: () => setStage(6), disabled: !auditPackage };
+      default:
+        return null;
+    }
+  })();
+
+  const secondaryActions: Action[] = [];
+  if (redactionResult && stage >= 3) secondaryActions.push({ label: 'Download redacted PDF', icon: <Download size={14} />, onClick: downloadRedactedPdf });
+  if (masterSeal && stage >= 5)
+    secondaryActions.push({ label: copiedSeal ? 'Seal copied' : 'Copy audit seal', icon: copiedSeal ? <Check size={14} /> : <Copy size={14} />, onClick: copySeal });
+  if (auditPackage && stage >= 5) secondaryActions.push({ label: 'Download audit package', icon: <FileText size={14} />, onClick: handleDownloadAuditPackage });
+  if (auditPackage && stage === 5 && verifierRequest) secondaryActions.push({ label: 'Verify in the auditor portal', icon: <ShieldCheck size={14} />, onClick: () => setStage(6) });
+  if (auditPackage && verifierRequest && stage < 5)
+    secondaryActions.push({ label: `Return to ${verifierRequest.requester}`, icon: <ExternalLink size={14} />, onClick: returnToVerifier });
 
   return (
     <div className="app-shell">
@@ -872,1335 +1175,777 @@ export function App() {
 
       <main className="main-viewport" style={{ padding: '20px 32px 40px 32px' }}>
         <div className="view-container" style={{ maxWidth: '1360px', gap: '20px' }}>
-          {/* Top Bar with Brand, Network Severing Egress Monitor, and Actions */}
-          <div className="neu-card" style={{ padding: '16px 24px', borderRadius: '24px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '14px' }}>
+          {/* Top bar: brand, egress monitor, view switch, document action */}
+          <div className="neu-card" style={{ padding: '14px 24px', borderRadius: '24px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
               <img
                 src="/logo.png"
                 alt="Zeroara Logo"
                 style={{ width: '34px', height: '34px', objectFit: 'contain', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(234, 88, 12, 0.3))' }}
               />
-              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.25rem', letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>
-                ZEROARA
-              </span>
-              <span className="neu-badge">
-                PROVABLE REDACTION PROTOCOL
-              </span>
+              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.25rem', letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>ZEROARA</span>
               <span className="neu-severed-pill">
                 <WifiOff size={13} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
-                {suryaStatus.online ? 'EGRESS: 0 KB · OCR VIA LOCAL SIDECAR (127.0.0.1)' : 'EGRESS: 0 KB / 0 REQUESTS [SEVERED]'}
+                {suryaStatus.online ? 'EGRESS: 0 KB · OCR ON 127.0.0.1' : 'EGRESS: 0 KB · SEVERED'}
               </span>
+            </div>
+
+            <div className="neu-nav-track" role="tablist" aria-label="Views">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'workspace'}
+                className={`neu-nav-btn ${activeView === 'workspace' ? 'active' : ''}`}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => setActiveView('workspace')}
+              >
+                <LayoutDashboard size={14} />
+                <span>Workspace</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'demo'}
+                className={`neu-nav-btn ${activeView === 'demo' ? 'active' : ''}`}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => setActiveView('demo')}
+              >
+                <Globe size={14} />
+                <span>Verifier demo</span>
+                {verifierRequest && !verifierResult && (
+                  <span className="neu-hash-pill" style={{ fontSize: '0.6rem', color: 'var(--accent)' }}>
+                    pending
+                  </span>
+                )}
+              </button>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               {doc ? (
-                <button
-                  type="button"
-                  className="neu-btn-secondary"
-                  style={{ fontSize: '0.82rem', padding: '8px 16px', gap: '6px' }}
-                  onClick={() => {
-                    setDoc(null);
-                    setDetectedFields([]);
-                    setExtractedTokens([]);
-                    setOcrTelemetry(null);
-                    setRedactionResult(null);
-                    setViewMode('ORIGINAL');
-                    setStage(1);
-                  }}
-                >
+                <button type="button" className="neu-btn-secondary" style={{ fontSize: '0.82rem', padding: '8px 16px', gap: '6px' }} onClick={clearDocument}>
                   <RefreshCw size={13} />
-                  <span>Clear & Upload Another</span>
+                  <span>Clear document</span>
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className="neu-btn-primary"
-                  style={{ fontSize: '0.84rem', padding: '9px 18px' }}
-                  onClick={handleLoadSample}
-                >
-                  {scenario.id === 'aadhaar' ? 'Load Specimen Aadhaar' : 'Load Sample Document'}
+                <button type="button" className="neu-btn-primary" style={{ fontSize: '0.84rem', padding: '9px 18px' }} onClick={handleLoadSample}>
+                  {scenario.id === 'aadhaar' ? 'Load specimen Aadhaar' : 'Load sample document'}
                 </button>
               )}
             </div>
           </div>
 
-          {/* Unified Protocol Stage Progress Header */}
-          <div className="neu-card" style={{ padding: '18px 24px', borderRadius: '24px', gap: '14px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                <div
-                  style={{
-                    width: '42px',
-                    height: '42px',
-                    borderRadius: '50%',
-                    backgroundColor: 'var(--bg-surface)',
-                    boxShadow: 'var(--shadow-inset-sm)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: 'var(--accent)',
-                    fontSize: '0.9rem',
-                    fontWeight: 800,
-                    fontFamily: 'var(--font-mono)',
-                    flexShrink: 0,
-                  }}
-                >
-                  {stage}
-                </div>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                    <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', fontWeight: 800, color: 'var(--fg-primary)', letterSpacing: '-0.01em' }}>
-                      {STAGE_CONFIG[stage].title}
-                    </h2>
-                    <span className="neu-badge" style={{ fontSize: '0.72rem', padding: '3px 9px' }}>
-                      {stage} / {MAX_STAGE}
-                    </span>
+          {/* Third-party verifier demo ("Verify with Zeroara") */}
+          {activeView === 'demo' && (
+            <VerifierDemoSite
+              request={verifierRequest}
+              result={verifierResult}
+              onStart={startVerifierRequest}
+              onOpenZeroara={() => setActiveView('workspace')}
+              onReset={resetVerifierDemo}
+            />
+          )}
+
+          {/* Workspace stays mounted (canvas + rasters survive view switches) */}
+          <div style={{ display: activeView === 'workspace' ? 'contents' : 'none' }}>
+            {/* Stage header */}
+            <div className="neu-card" style={{ padding: '16px 24px', borderRadius: '24px', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', minWidth: 0 }}>
+                  <div className="neu-check-icon" style={{ width: '42px', height: '42px', color: 'var(--accent)', fontFamily: 'var(--font-mono)', fontWeight: 800, fontSize: '0.9rem' }}>
+                    {stage}
                   </div>
-                  <p style={{ fontSize: '0.78rem', color: 'var(--fg-muted)', marginTop: '2px' }}>
-                    {STAGE_CONFIG[stage].subtitle}
-                  </p>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.05rem', color: 'var(--fg-primary)' }}>{STAGE_CONFIG[stage].title}</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--fg-muted)' }}>{STAGE_CONFIG[stage].subtitle}</div>
+                  </div>
                 </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span className="neu-status-pill" style={{ padding: '6px 14px', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                  {Math.round((stage / MAX_STAGE) * 100)}% COMPLETE
-                </span>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <button
-                    type="button"
-                    className="neu-btn-secondary"
-                    style={{ padding: '7px 14px', fontSize: '0.78rem', gap: '5px' }}
-                    onClick={() => setStage((prev) => Math.max(1, prev - 1) as StageNumber)}
-                    disabled={stage === 1}
-                  >
-                    <ArrowLeft size={13} />
-                    <span>Back</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="neu-btn-primary"
-                    style={{ padding: '7px 16px', fontSize: '0.78rem', gap: '5px' }}
-                    onClick={() => setStage((prev) => Math.min(MAX_STAGE, prev + 1) as StageNumber)}
-                    disabled={
-                      (stage === 1 && !doc) ||
-                      (stage === 2 && detectedFields.length === 0) ||
-                      (stage === 3 && !redactionResult) ||
-                      (stage === 4 && !proofResult) ||
-                      (stage === 5 && !masterSeal) ||
-                      stage === MAX_STAGE
-                    }
-                  >
-                    <span>Next</span>
-                    <ArrowRight size={13} />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Inset Neumorphic Progress Bar */}
-            <div className="neu-progress-track">
-              <div
-                className="neu-progress-fill"
-                style={{ width: `${(stage / MAX_STAGE) * 100}%` }}
-              />
-            </div>
-          </div>
-
-        {/* Stages 1-5 Split-Pane: Document Viewport (Left) & Cryptographic Telemetry (Right) */}
-        {stage <= 5 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 1fr)',
-              gap: '20px',
-              alignItems: 'stretch',
-            }}
-          >
-            {/* Left Panel: Document Viewport */}
-            <div className="neu-card" style={{ width: '100%', padding: '22px', gap: '14px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <FileText size={18} style={{ color: 'var(--accent)' }} />
-                  <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '0.96rem' }}>
-                    Document Viewport
+                {verifierRequest && (
+                  <span className="neu-claim-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    <KeyRound size={12} />
+                    Request from {verifierRequest.requester} · {verifierRequest.claim}
                   </span>
-                </div>
-                {doc && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {stage === 2 && (
-                      <button
-                        className="neu-pill-btn"
-                        style={{ fontSize: '0.72rem', padding: '4px 10px' }}
-                        onClick={() => setShowHudOverlays(!showHudOverlays)}
-                      >
-                        HUD Outlines: {showHudOverlays ? 'Visible' : 'Hidden'}
-                      </button>
-                    )}
-
-                    {stage >= 3 && redactionResult && (
-                      <div style={{ display: 'flex', gap: '4px' }}>
-                        <button
-                          className={`neu-pill-btn ${viewMode === 'BURNED' ? 'active' : ''}`}
-                          style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                          onClick={() => setViewMode('BURNED')}
-                        >
-                          <Flame size={12} style={{ color: 'var(--accent)' }} />
-                          <span>Burned Raster</span>
-                        </button>
-                        <button
-                          className={`neu-pill-btn ${viewMode === 'ORIGINAL' ? 'active' : ''}`}
-                          style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                          onClick={() => setViewMode('ORIGINAL')}
-                        >
-                          <Eye size={12} />
-                          <span>Original</span>
-                        </button>
-                      </div>
-                    )}
-
-                    <span className="neu-hash-pill" style={{ color: stage === 5 ? 'var(--accent-secondary)' : 'var(--accent)', fontWeight: 700 }}>
-                      {stage === 1 && 'STAGE 1: RAW INGEST'}
-                      {stage === 2 && `STAGE 2: ${detectedFields.length} TARGETS`}
-                      {stage === 3 && 'STAGE 3: PIXEL BURNED & FLATTENED'}
-                      {stage === 4 && 'STAGE 4: ZK PROOF ACTIVE'}
-                      {stage === 5 && 'STAGE 5: SEAL ANCHORED'}
-                    </span>
-                  </div>
                 )}
               </div>
-
-              {/* Drag & Drop Upload Zone */}
-              <div
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setIsDragging(false);
-                  if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
-                }}
-                onClick={() => fileInputRef.current?.click()}
-                className={`neu-dropzone ${isDragging ? 'dragging' : ''}`}
-                style={{ display: doc ? 'none' : 'flex' }}
-              >
-                <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'var(--bg-surface)', boxShadow: 'var(--shadow-extruded)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
-                  <UploadCloud size={32} />
-                </div>
-                <div>
-                  <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', fontWeight: 800 }}>
-                    Drop your document here, or click to browse
-                  </h4>
-                  <p style={{ fontSize: '0.84rem', color: 'var(--fg-muted)', marginTop: '6px', maxWidth: '380px' }}>
-                    Supports <strong>PDF and images</strong> — PNG, JPEG, WebP, GIF, BMP, and AVIF. Processed entirely on this machine — OCR runs in-browser or on a local sidecar at 127.0.0.1. <strong>Nothing leaves your device.</strong>
-                  </p>
-                  {uploadError && (
-                    <p role="alert" style={{ fontSize: '0.78rem', color: '#B91C1C', marginTop: '8px', maxWidth: '420px' }}>
-                      {uploadError}
-                    </p>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button
-                    type="button"
-                    className="neu-btn-primary"
-                    style={{ fontSize: '0.84rem', padding: '10px 20px' }}
-                    onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                  >
-                    Browse Local Files
-                  </button>
-                  <button
-                    type="button"
-                    className="neu-btn-secondary"
-                    style={{ fontSize: '0.84rem', padding: '10px 18px' }}
-                    onClick={(e) => { e.stopPropagation(); handleLoadSample(); }}
-                  >
-                    {scenario.id === 'aadhaar' ? 'Load Specimen Aadhaar' : 'Load Sample Certificate'}
-                  </button>
-                </div>
-              </div>
-
-              {/* In-Memory Spatial Document Render Canvas */}
-              <div
-                style={{
-                  display: doc ? 'flex' : 'none',
-                  flexDirection: 'column',
-                  gap: '12px',
-                  alignItems: 'center',
-                  width: '100%',
-                }}
-              >
-                <div
-                  style={{
-                    position: 'relative',
-                    width: '100%',
-                    backgroundColor: 'var(--bg-surface)',
-                    boxShadow: 'var(--shadow-inset)',
-                    borderRadius: '20px',
-                    padding: '16px',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    minHeight: '440px',
-                    overflow: 'auto',
-                  }}
-                >
-                  <canvas
-                    ref={canvasRef}
-                    style={{
-                      maxWidth: '100%',
-                      height: 'auto',
-                      borderRadius: '12px',
-                      boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-                      display: (stage >= 3 && viewMode === 'BURNED' && redactionResult) ? 'none' : 'block',
-                    }}
-                  />
-                  {stage >= 3 && viewMode === 'BURNED' && redactionResult && (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-                      <img
-                        src={redactionResult.flattenedPngDataUrl}
-                        alt="Physically Burned and Flattened Document Raster"
-                        style={{ maxWidth: '100%', height: 'auto', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', display: 'block' }}
-                      />
-                      {totalPages > 1 && (
-                        <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)', fontWeight: 600 }}>
-                          Showing Page 1 of {totalPages} (All {totalPages} pages are contained in the downloadable PDF).
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {totalPages > 1 && stage < 3 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
-                    <button
-                      className="neu-pill-btn"
-                      onClick={() => handlePrevPage()}
-                      disabled={currentPage === 1}
-                      style={{ padding: '6px 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <ArrowLeft size={14} /> Prev
-                    </button>
-                    <span style={{ fontSize: '0.84rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--fg-primary)' }}>
-                      Page {currentPage} of {totalPages}
-                    </span>
-                    <button
-                      className="neu-pill-btn"
-                      onClick={() => handleNextPage()}
-                      disabled={currentPage === totalPages}
-                      style={{ padding: '6px 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      Next <ArrowRight size={14} />
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                <span>
-                  Spatial State: {stage >= 3 && viewMode === 'BURNED' ? 'Flattened Non-Extractable Raster' : (ocrTelemetry ? ocrTelemetry.engineName : suryaStatus.ready ? 'Surya OCR · local sidecar ready' : suryaStatus.online ? 'Surya OCR · warming up…' : 'Surya offline · Tesseract fallback')}
-                </span>
-                <span>Isolated RAM: Active</span>
+              <div className="neu-progress-track">
+                <div className="neu-progress-fill" style={{ width: `${(stage / MAX_STAGE) * 100}%` }} />
               </div>
             </div>
 
-            {/* Right Panel: Telemetry & Spatial Inspector */}
-            <div className="neu-card" style={{ width: '100%', padding: '22px', gap: '16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <ShieldCheck size={18} style={{ color: stage === 5 ? 'var(--accent-secondary)' : 'var(--accent)' }} />
-                  <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '0.96rem' }}>
-                    {STAGE_CONFIG[stage].telemetryTitle}
-                  </span>
-                </div>
-                <span className="neu-hash-pill" style={{ color: stage === 5 ? 'var(--accent-secondary)' : 'var(--accent)', fontWeight: 700 }}>
-                  {stage === 1 && 'H(Doc) ANCHOR'}
-                  {stage === 2 && `${detectedFields.length} ZONES DETECTED`}
-                  {stage === 3 && 'ZERO-STREAM PURGE'}
-                  {stage === 4 && (proofVerified ? 'SOUNDNESS CONFIRMED' : 'CIRCUIT READY')}
-                  {stage === 5 && (masterSeal ? 'QUAD-FACTOR SEALED' : 'AWAITING BINDING')}
-                </span>
-              </div>
-
-              {/* STAGE 1 VIEW IN TELEMETRY */}
-              {stage === 1 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Preimage SHA-256 Digest Card */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.76rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent)' }}>
-                        CRYPTOGRAPHIC PREIMAGE SHA-256 H(Doc):
-                      </span>
-                      {doc && (
-                        <button
-                          className="neu-pill-btn"
-                          style={{ fontSize: '0.7rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                          onClick={copyHash}
-                        >
-                          {copied ? <Check size={12} color="var(--accent-secondary)" /> : <Copy size={12} />}
-                          <span>{copied ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      )}
-                    </div>
-
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.6',
-                        color: doc ? 'var(--fg-primary)' : 'var(--fg-muted)',
-                        backgroundColor: 'var(--bg-surface)',
-                        boxShadow: 'var(--shadow-inset-sm)',
-                        padding: '12px 14px',
-                        borderRadius: '10px',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {doc ? doc.chunkedHash : 'Awaiting document ingestion to compute 256-bit digest...'}
-                    </div>
-
+            {stage <= 5 && (
+              <div className="workspace-grid">
+                {/* Left viewport: document canvas, bounding boxes, burn layer */}
+                <div className="neu-card" style={{ padding: '22px', gap: '14px', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                    <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.95rem', color: 'var(--fg-primary)' }}>Document</span>
                     {doc && (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.74rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                        <div>Size: {doc.fileSizeBytes.toLocaleString()} bytes</div>
-                        <div>MIME: {doc.mimeType}</div>
-                        <div>Ingest Time: {doc.timestamp}</div>
-                        <div>Zero Network Calls: Confirmed</div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Enterprise Verification Specification Simulator */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Building2 size={16} style={{ color: 'var(--accent)' }} />
-                        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                          Enterprise Verifier Requirement (Simulator)
-                        </span>
-                      </div>
-                      <span className="neu-claim-badge">SIMULATED AUDITOR</span>
-                    </div>
-
-                    {/* Document Category / Scenario Selector */}
-                    <div>
-                      <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)', display: 'block', marginBottom: '4px' }}>
-                        Document Category
-                      </label>
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                        {SCENARIOS.map((s) => (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        {stage === 2 && (
                           <button
-                            key={s.id}
                             type="button"
-                            className="neu-pill-btn"
-                            style={{
-                              fontSize: '0.72rem',
-                              padding: '4px 10px',
-                              color: enterpriseSpec.documentCategory === s.id ? 'var(--accent)' : 'var(--fg-muted)',
-                              boxShadow: enterpriseSpec.documentCategory === s.id ? 'var(--shadow-inset-sm)' : 'var(--shadow-extruded-sm)',
-                              fontWeight: enterpriseSpec.documentCategory === s.id ? 700 : 500,
-                            }}
-                            onClick={() => applyScenario(s.id)}
+                            className={`neu-pill-btn ${showHudOverlays ? 'active' : ''}`}
+                            style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                            onClick={() => setShowHudOverlays((v) => !v)}
                           >
-                            {s.label}
+                            {showHudOverlays ? <Eye size={12} /> : <EyeOff size={12} />}
+                            <span>Bounding boxes</span>
                           </button>
-                        ))}
-                      </div>
-                      <p style={{ fontSize: '0.72rem', color: 'var(--fg-muted)', marginTop: '8px', lineHeight: 1.5 }}>
-                        {scenario.description}
-                      </p>
-                      <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '6px' }}>
-                        {scenario.fields.map((f) => (
-                          <span key={f.key} className="neu-claim-badge" style={{ fontSize: '0.66rem' }}>
-                            {f.label} · {f.action === 'PROVE_AND_BURN' ? 'prove+burn' : f.action === 'DETECT_ONLY' ? 'detect' : 'burn'}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '10px' }}>
-                      <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)', display: 'block', marginBottom: '4px' }}>
-                          Enterprise Requester Name
-                        </label>
-                        <input
-                          type="text"
-                          className="neu-input"
-                          style={{ padding: '10px 14px', fontSize: '0.8rem' }}
-                          value={enterpriseSpec.requesterName}
-                          onChange={(e) => {
-                            setEnterpriseSpec({ ...enterpriseSpec, requesterName: e.target.value });
-                            invalidateDownstreamState('Enterprise requester changed — session binding context invalidated.');
-                          }}
-                        />
-                      </div>
-
-                      <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--fg-muted)', display: 'block', marginBottom: '4px' }}>
-                          {scenarioProofBacked ? `Required Threshold (${enterpriseSpec.currency || 'value'})` : 'Predicate'}
-                        </label>
-                        {scenarioProofBacked ? (
-                          <input
-                            type="number"
-                            step="5000"
-                            min="0"
-                            className="neu-input"
-                            style={{ padding: '10px 14px', fontSize: '0.8rem', fontWeight: 700 }}
-                            value={enterpriseSpec.thresholdValue}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              setEnterpriseSpec({ ...enterpriseSpec, thresholdValue: val });
-                              invalidateDownstreamState('Enterprise threshold modified — previous ZK proof invalidated.');
-                              if (extractedTokens.length > 0) {
-                                setDetectedFields(
-                                  classifyForScenario(extractedTokens, scenario, { thresholdValue: val })
-                                );
-                              }
-                            }}
-                          />
-                        ) : (
-                          <div className="neu-input" style={{ padding: '10px 14px', fontSize: '0.78rem', color: 'var(--fg-muted)' }}>
-                            Seal-only · no numeric predicate
-                          </div>
+                        )}
+                        {stage >= 3 && redactionResult && (
+                          <>
+                            <button
+                              type="button"
+                              className={`neu-pill-btn ${viewMode === 'BURNED' ? 'active' : ''}`}
+                              style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => setViewMode('BURNED')}
+                            >
+                              <Flame size={12} style={{ color: 'var(--accent)' }} />
+                              <span>Burned</span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`neu-pill-btn ${viewMode === 'ORIGINAL' ? 'active' : ''}`}
+                              style={{ fontSize: '0.72rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              onClick={() => setViewMode('ORIGINAL')}
+                            >
+                              <Eye size={12} />
+                              <span>Original</span>
+                            </button>
+                          </>
                         )}
                       </div>
-                    </div>
+                    )}
+                  </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', color: 'var(--fg-muted)' }}>
-                      <span>Nonce: <strong className="mono">{enterpriseSpec.challengeNonce.substring(0, 14)}...</strong></span>
+                  {/* Drag & drop upload zone */}
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setIsDragging(true);
+                    }}
+                    onDragLeave={() => setIsDragging(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setIsDragging(false);
+                      if (e.dataTransfer.files?.[0]) handleFileUpload(e.dataTransfer.files[0]);
+                    }}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`neu-dropzone ${isDragging ? 'dragging' : ''}`}
+                    style={{ display: doc ? 'none' : 'flex' }}
+                  >
+                    <div style={{ width: '64px', height: '64px', borderRadius: '50%', backgroundColor: 'var(--bg-surface)', boxShadow: 'var(--shadow-extruded)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent)' }}>
+                      <UploadCloud size={32} />
+                    </div>
+                    <div>
+                      <h4 style={{ fontFamily: 'var(--font-display)', fontSize: '1.15rem', fontWeight: 800 }}>
+                        {verifierRequest ? 'Drop the front of your Aadhaar card here' : 'Drop your document here, or click to browse'}
+                      </h4>
+                      <p style={{ fontSize: '0.84rem', color: 'var(--fg-muted)', marginTop: '6px', maxWidth: '380px' }}>
+                        PDF or image (PNG, JPEG, WebP, GIF, BMP, AVIF). Read entirely on this machine — in the browser or on a local sidecar at 127.0.0.1.{' '}
+                        <strong>Nothing leaves your device.</strong>
+                      </p>
+                      {uploadError && (
+                        <p role="alert" style={{ fontSize: '0.78rem', color: '#B91C1C', marginTop: '8px', maxWidth: '420px' }}>
+                          {uploadError}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: '10px' }}>
                       <button
                         type="button"
-                        onClick={() => {
-                          regenerateNonce();
-                          invalidateDownstreamState('Challenge nonce regenerated — session binding invalidated.');
+                        className="neu-btn-primary"
+                        style={{ fontSize: '0.84rem', padding: '10px 20px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fileInputRef.current?.click();
                         }}
-                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--accent)', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
                       >
-                        <RefreshCw size={11} />
-                        <span>Regenerate Nonce</span>
+                        Browse files
+                      </button>
+                      <button
+                        type="button"
+                        className="neu-btn-secondary"
+                        style={{ fontSize: '0.84rem', padding: '10px 18px' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleLoadSample();
+                        }}
+                      >
+                        {scenario.id === 'aadhaar' ? 'Load specimen Aadhaar' : 'Load sample document'}
                       </button>
                     </div>
                   </div>
 
-                  {/* Primary CTA to proceed to Phase 2 */}
-                  {doc && (
-                    <button
-                      className="neu-btn-primary"
-                      onClick={() => setStage(2)}
-                      disabled={ocrRunning}
-                      style={{ width: '100%', padding: '12px', fontSize: '0.88rem', gap: '8px' }}
+                  {/* In-memory document canvas */}
+                  <div style={{ display: doc ? 'flex' : 'none', flexDirection: 'column', gap: '12px', alignItems: 'center', width: '100%' }}>
+                    <div
+                      style={{
+                        position: 'relative',
+                        width: '100%',
+                        backgroundColor: 'var(--bg-surface)',
+                        boxShadow: 'var(--shadow-inset)',
+                        borderRadius: '20px',
+                        padding: '16px',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        minHeight: '440px',
+                        overflow: 'auto',
+                      }}
                     >
-                      <span>Proceed to Stage 2: OCR Coordinate Detection</span>
-                      <ArrowRight size={16} />
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* STAGE 2 VIEW IN TELEMETRY */}
-              {stage === 2 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Real Telemetry Bar */}
-                  {ocrTelemetry && (
-                    <div className="neu-well" style={{ padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', fontFamily: 'var(--font-mono)' }}>
-                      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-                        {ocrTelemetry.tokenCount} tokens parsed ({ocrTelemetry.latencyMs}ms)
-                      </span>
-                      <span style={{ color: 'var(--fg-muted)' }}>
-                        {detectedFields.length} target zones locked
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Dynamically Rendered Detected Fields */}
-                  {detectedFields.length === 0 ? (
-                    <div className="neu-well" style={{ padding: '24px', textAlign: 'center', color: 'var(--fg-muted)', fontSize: '0.82rem' }}>
-                      {pdfLocked ? (
-                        <form
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            setPdfPassword(pdfPasswordDraft.trim());
-                          }}
-                          style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'stretch', textAlign: 'left' }}
-                        >
-                          <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                            This PDF is password-protected
-                          </span>
-                          <span style={{ fontSize: '0.76rem', color: 'var(--fg-muted)' }}>
-                            e-Aadhaar passwords are the first 4 letters of your name in CAPITALS + birth year (e.g. RAHU1998). The password never leaves this device.
-                          </span>
-                          {pdfLocked.incorrect && (
-                            <span role="alert" style={{ fontSize: '0.76rem', color: '#B91C1C' }}>Incorrect password — try again.</span>
+                      <canvas
+                        ref={canvasRef}
+                        style={{
+                          maxWidth: '100%',
+                          height: 'auto',
+                          borderRadius: '12px',
+                          boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                          display: stage >= 3 && viewMode === 'BURNED' && redactionResult ? 'none' : 'block',
+                        }}
+                      />
+                      {stage >= 3 && viewMode === 'BURNED' && redactionResult && (
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
+                          <img
+                            src={redactionResult.flattenedPngDataUrl}
+                            alt="Burned and flattened document raster"
+                            style={{ maxWidth: '100%', height: 'auto', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', display: 'block' }}
+                          />
+                          {totalPages > 1 && (
+                            <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)', fontWeight: 600 }}>
+                              Page 1 of {totalPages} shown · all pages are in the downloadable PDF
+                            </span>
                           )}
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <input
-                              type="password"
-                              className="neu-input"
-                              style={{ flex: 1, padding: '10px 14px', fontSize: '0.8rem' }}
-                              placeholder="PDF password"
-                              value={pdfPasswordDraft}
-                              onChange={(e) => setPdfPasswordDraft(e.target.value)}
-                              autoFocus
-                            />
-                            <button type="submit" className="neu-btn-primary" style={{ fontSize: '0.8rem', padding: '10px 16px' }}>
-                              Unlock
-                            </button>
-                          </div>
-                        </form>
-                      ) : (
-                        <>No targets auto-classified. Select tokens below to define redaction regions.{!suryaStatus.ready && ' Higher-accuracy OCR is available: start the local Surya sidecar (./sidecar/run.sh) and re-upload.'}</>
+                        </div>
                       )}
                     </div>
-                  ) : (
-                    detectedFields.map((field, idx) => {
-                      const isSelected = selectedFieldId === field.id;
-                      const isWitness = field.action === 'PROVE_AND_BURN';
-                      return (
-                        <div
-                          key={field.id}
-                          onClick={() => setSelectedFieldId(field.id)}
-                          className="neu-well"
-                          style={{
-                            padding: '16px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '10px',
-                            cursor: 'pointer',
-                            boxShadow: isSelected ? 'var(--shadow-inset)' : 'var(--shadow-extruded-sm)',
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', fontSize: '0.74rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
+                    <span>{engineLine}</span>
+                    {totalPages > 1 && stage < 3 && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <button type="button" className="neu-pill-btn" onClick={handlePrevPage} disabled={currentPage === 1} style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <ArrowLeft size={12} /> Prev
+                        </button>
+                        <span style={{ fontWeight: 700, color: 'var(--fg-primary)' }}>
+                          Page {currentPage} / {totalPages}
+                        </span>
+                        <button type="button" className="neu-pill-btn" onClick={handleNextPage} disabled={currentPage === totalPages} style={{ padding: '4px 10px', fontSize: '0.74rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          Next <ArrowRight size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right viewport: verification checklist & primary actions */}
+                <div className="neu-card" style={{ padding: '22px', gap: '14px', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.95rem', color: 'var(--fg-primary)' }}>
+                      <ShieldCheck size={18} style={{ color: masterSeal ? 'var(--accent-secondary)' : 'var(--accent)' }} />
+                      Verification checklist
+                    </span>
+                    <span className="neu-claim-badge">{requirementText}</span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {checklist.map((item) => (
+                      <ChecklistItem
+                        key={item.n}
+                        index={item.n}
+                        title={item.title}
+                        detail={item.detail}
+                        state={item.state}
+                        current={stage === item.n}
+                        disabled={!reachable(item.n)}
+                        onClick={() => (item.n === 6 && verifierRequest ? returnToVerifier() : setStage(item.n))}
+                      />
+                    ))}
+                  </div>
+
+                  {primaryAction && (
+                    <button
+                      type="button"
+                      className="neu-btn-primary"
+                      style={{ padding: '13px 18px', fontSize: '0.9rem', gap: '10px', width: '100%', justifyContent: 'center' }}
+                      onClick={primaryAction.onClick}
+                      disabled={primaryAction.disabled}
+                    >
+                      {primaryAction.icon}
+                      <span>{primaryAction.label}</span>
+                    </button>
+                  )}
+
+                  {secondaryActions.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {secondaryActions.map((a) => (
+                        <button key={a.label} type="button" className="neu-btn-secondary" style={{ padding: '8px 12px', fontSize: '0.76rem', gap: '6px' }} onClick={a.onClick}>
+                          {a.icon}
+                          <span>{a.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {invalidationMessage && (
+                    <div className="neu-well-deep" style={{ padding: '10px 12px', fontSize: '0.74rem', color: 'var(--fg-muted)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                      <Info size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                      <span>{invalidationMessage}</span>
+                    </div>
+                  )}
+                  {proverError && (
+                    <div className="neu-well-deep" style={{ padding: '10px 12px', fontSize: '0.74rem', color: 'var(--accent-rose)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                      <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                      <span>{proverError}</span>
+                    </div>
+                  )}
+
+                  {/* Stage detail — one focused panel per step, everything else folded away */}
+                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {stage === 1 && (
+                      <>
+                        {verifierRequest && (
+                          <div className="neu-verified-well" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '0.82rem', color: 'var(--accent-secondary)' }}>
+                              Configured by {verifierRequest.requester}
+                            </span>
+                            <span style={{ fontSize: '0.76rem', color: 'var(--fg-muted)' }}>
+                              {verifierRequest.purpose}. Upload your Aadhaar — the claim, document type and challenge nonce are locked to this request.
+                            </span>
+                          </div>
+                        )}
+                        <Select
+                          label="Document type"
+                          value={scenario.id}
+                          options={SCENARIOS.map((s) => ({ value: s.id, label: s.label }))}
+                          onChange={(id) => {
+                            setCustomThreshold(false);
+                            applyScenario(id);
                           }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <Crosshair size={16} style={{ color: isWitness ? 'var(--accent)' : 'var(--accent-secondary)' }} />
-                              <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                                Target {idx + 1}: {field.label}
-                              </span>
+                          disabled={!!verifierRequest}
+                        />
+                        <Select label="Verification requirement" value={requirementValue} options={requirementOptions} onChange={applyRequirementPreset} disabled={!!verifierRequest} />
+                        {scenarioProofBacked && requirementValue === 'custom' && !verifierRequest && (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: '8px' }}>
+                            <input
+                              className="neu-input"
+                              type="number"
+                              min={0}
+                              value={enterpriseSpec.thresholdValue}
+                              onChange={(e) => setThresholdValue(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                              aria-label="Threshold value"
+                            />
+                            <input
+                              className="neu-input"
+                              value={enterpriseSpec.currency}
+                              onChange={(e) => setEnterpriseSpec((prev) => ({ ...prev, currency: e.target.value }))}
+                              aria-label="Unit"
+                            />
+                          </div>
+                        )}
+                        <Accordion title="Verifier details" summary={enterpriseSpec.requesterName} icon={<Building2 size={14} />}>
+                          <label style={LABEL_STYLE}>
+                            Requester
+                            <input className="neu-input" value={enterpriseSpec.requesterName} disabled={!!verifierRequest} onChange={(e) => setEnterpriseSpec((prev) => ({ ...prev, requesterName: e.target.value }))} />
+                          </label>
+                          <label style={LABEL_STYLE}>
+                            Purpose
+                            <input className="neu-input" value={enterpriseSpec.purpose} disabled={!!verifierRequest} onChange={(e) => setEnterpriseSpec((prev) => ({ ...prev, purpose: e.target.value }))} />
+                          </label>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={SMALL_LABEL}>Challenge nonce</span>
+                              {!verifierRequest && (
+                                <button type="button" className="neu-pill-btn" style={{ fontSize: '0.68rem', padding: '3px 9px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={regenerateNonce}>
+                                  <RefreshCw size={11} /> New nonce
+                                </button>
+                              )}
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <span
-                                className="neu-claim-badge"
-                                style={{
-                                  color: isWitness ? 'var(--accent)' : 'var(--accent-secondary)',
+                            <HashBlock value={enterpriseSpec.challengeNonce} small />
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            <span style={SMALL_LABEL}>Fields to redact</span>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                              {enterpriseSpec.requiredRedactionFields.map((f) => (
+                                <span key={f} className="neu-hash-pill" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  {f}
+                                  {!verifierRequest && (
+                                    <button
+                                      type="button"
+                                      aria-label={`Remove ${f}`}
+                                      onClick={() => setEnterpriseSpec((prev) => ({ ...prev, requiredRedactionFields: prev.requiredRedactionFields.filter((x) => x !== f) }))}
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'var(--fg-muted)' }}
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </Accordion>
+                        {doc && (
+                          <Accordion title="Document fingerprint" summary={`${(doc.fileSizeBytes / 1024).toFixed(1)} KB`} icon={<Fingerprint size={14} />} defaultOpen>
+                            <KV label="File" value={doc.fileName} mono={false} />
+                            <KV label="Type" value={doc.mimeType} />
+                            <KV label="Ingested" value={doc.timestamp} />
+                            <HashBlock value={doc.chunkedHash} onCopy={copyHash} copied={copied} small />
+                          </Accordion>
+                        )}
+                      </>
+                    )}
+
+                    {stage === 2 && (
+                      <>
+                        {pdfLocked && (
+                          <div className="neu-well-deep" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.82rem', color: 'var(--fg-primary)' }}>
+                              <Lock size={14} /> This PDF is password-protected
+                            </span>
+                            <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>
+                              e-Aadhaar PDFs open with the first four letters of your name in CAPITALS followed by your birth year, e.g. RAHU1998. The password never leaves this device.
+                            </span>
+                            <form
+                              style={{ display: 'flex', gap: '8px' }}
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                setPdfPassword(pdfPasswordDraft);
+                              }}
+                            >
+                              <input className="neu-input" type="password" value={pdfPasswordDraft} onChange={(e) => setPdfPasswordDraft(e.target.value)} placeholder="PDF password" aria-label="PDF password" />
+                              <button type="submit" className="neu-btn-primary" style={{ padding: '8px 14px', fontSize: '0.78rem' }}>
+                                Unlock
+                              </button>
+                            </form>
+                            {pdfLocked.incorrect && <span style={{ fontSize: '0.74rem', color: 'var(--accent-rose)' }}>That password did not open the file. Try again.</span>}
+                          </div>
+                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                          {ocrRunning ? (
+                            <StatusBadge tone="active">
+                              <Loader2 size={13} className="spin" /> Reading document…
+                            </StatusBadge>
+                          ) : (
+                            <StatusBadge tone={detectedFields.length > 0 ? 'ok' : 'warn'}>
+                              {detectedFields.length > 0 ? `${detectedFields.length} targets detected` : 'No targets detected'}
+                            </StatusBadge>
+                          )}
+                          {scenario.id === 'aadhaar' && !ocrRunning && doc && (
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <button type="button" className="neu-pill-btn" style={{ fontSize: '0.7rem', padding: '3px 9px' }} onClick={() => addRegionTarget('photo')}>
+                                + Photo region
+                              </button>
+                              <button type="button" className="neu-pill-btn" style={{ fontSize: '0.7rem', padding: '3px 9px' }} onClick={() => addRegionTarget('qr')}>
+                                + QR region
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {!ocrRunning && doc && !pdfLocked && detectedFields.length === 0 && (
+                          <span style={{ fontSize: '0.76rem', color: 'var(--fg-muted)' }}>
+                            Nothing was recognised. Try a sharper, well-lit photo of the front of the card, or open the token index below to mark targets by hand.
+                          </span>
+                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '340px', overflowY: 'auto', paddingRight: '2px' }}>
+                          {detectedFields.map((field) => {
+                            const tone = field.action === 'PROVE_AND_BURN' ? 'active' : field.action === 'DIRECT_BURN' ? 'warn' : 'muted';
+                            const Icon = field.action === 'PROVE_AND_BURN' ? Cpu : field.action === 'DIRECT_BURN' ? Flame : Eye;
+                            const selected = selectedFieldId === field.id;
+                            return (
+                              <div
+                                key={field.id}
+                                role="button"
+                                tabIndex={0}
+                                className={`neu-check-item ${selected ? 'current' : ''}`}
+                                onClick={() => selectTarget(field)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    selectTarget(field);
+                                  }
                                 }}
                               >
-                                {isWitness ? 'ZK PROVE & BURN' : 'DIRECT REDACTION'}
-                              </span>
-                              {field.source === 'MANUAL_USER' && (
+                                <span className={`neu-check-icon neu-tone-${tone}`}>
+                                  <Icon size={14} />
+                                </span>
+                                <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0, flex: 1 }}>
+                                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                    <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '0.8rem', color: 'var(--fg-primary)' }}>{field.label}</span>
+                                    <span className="neu-hash-pill" style={{ fontSize: '0.62rem' }}>
+                                      {ACTION_LABEL[field.action]}
+                                    </span>
+                                    {totalPages > 1 && (
+                                      <span className="neu-hash-pill" style={{ fontSize: '0.62rem' }}>
+                                        p.{field.page}
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--fg-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                    {field.extractedValue}
+                                    {typeof field.satisfiesThreshold === 'boolean' && (
+                                      <span className={field.satisfiesThreshold ? 'neu-tone-ok' : 'neu-tone-warn'}> · {field.satisfiesThreshold ? 'meets requirement' : 'below requirement'}</span>
+                                    )}
+                                    {typeof field.confidence === 'number' && ` · ${Math.round(field.confidence)}%`}
+                                  </span>
+                                </span>
                                 <button
                                   type="button"
+                                  aria-label={`Remove ${field.label}`}
+                                  className="neu-pill-btn"
+                                  style={{ padding: '4px 7px', display: 'flex' }}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleRemoveTarget(field.id);
                                   }}
-                                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)' }}
                                 >
-                                  <Trash2 size={13} />
+                                  <Trash2 size={12} />
                                 </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <Accordion title="OCR details" summary={ocrTelemetry ? `${ocrTelemetry.latencyMs} ms` : undefined} icon={<ScanLine size={14} />}>
+                          <KV label="Engine" value={ocrTelemetry?.engineName ?? engineLine} mono={false} />
+                          <KV label="Tokens" value={ocrTelemetry?.tokenCount ?? 0} />
+                          <KV label="Targets" value={ocrTelemetry?.targetsFound ?? 0} />
+                          <KV label="Pages" value={totalPages} />
+                          <KV label="Latency" value={ocrTelemetry ? `${ocrTelemetry.latencyMs} ms` : '—'} />
+                        </Accordion>
+                        <Accordion title="Token index" summary={`${extractedTokens.length} tokens`} icon={<SlidersHorizontal size={14} />}>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>Click any token to mark it as a redaction target.</span>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', maxHeight: '200px', overflowY: 'auto' }}>
+                            {extractedTokens.map((t) => (
+                              <button
+                                key={t.id}
+                                type="button"
+                                className="neu-pill-btn"
+                                style={{ fontSize: '0.68rem', padding: '3px 8px' }}
+                                onClick={() => handleAddTokenAsTarget(t)}
+                                title={`page ${t.page} · ${Math.round(t.confidence ?? 0)}%`}
+                              >
+                                {t.text}
+                              </button>
+                            ))}
+                          </div>
+                        </Accordion>
+                      </>
+                    )}
+
+                    {stage === 3 &&
+                      (redactionResult ? (
+                        <>
+                          <StatusBadge tone="ok">
+                            <CheckCircle2 size={13} /> Burned & flattened
+                          </StatusBadge>
+                          <KV label="Zones burned" value={redactionResult.burnedZonesCount} />
+                          <KV label="Text streams purged" value={redactionResult.textStreamCount} />
+                          <KV label="Pages" value={redactionResult.pageCount} />
+                          <KV label="Output size" value={`${(redactionResult.fileSizeBytes / 1024).toFixed(1)} KB`} />
+                          <KV label="Burn time" value={`${redactionResult.durationMs} ms`} />
+                          <Accordion title="Sanitisation details" icon={<Fingerprint size={14} />}>
+                            <span style={SMALL_LABEL}>H(Doc_redacted) · SHA-256 of the flattened PDF</span>
+                            <HashBlock value={redactionResult.chunkedHash} onCopy={copyRedactedHash} copied={copiedRedacted} small />
+                            <KV label="Root bond" value={`${doc?.hashHex.slice(0, 10) ?? '—'}… → ${redactionResult.redactedHashHex.slice(0, 10)}…`} />
+                            <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>
+                              Every page is re-encoded as a raster image: no text layer, fonts or metadata survive, so nothing under a black box can be recovered.
+                            </span>
+                          </Accordion>
+                        </>
+                      ) : (
+                        <StatusBadge tone="muted">Not burned yet</StatusBadge>
+                      ))}
+
+                    {stage === 4 &&
+                      (needsProof && witnessTarget ? (
+                        <>
+                          {proofResult ? (
+                            proofVerified ? (
+                              <StatusBadge tone="ok">
+                                <CheckCircle2 size={13} /> Proof Validated ({proofLatency ?? 0} ms)
+                              </StatusBadge>
+                            ) : proofVerified === false ? (
+                              <StatusBadge tone="warn">
+                                <AlertTriangle size={13} /> Proof did not verify
+                              </StatusBadge>
+                            ) : (
+                              <StatusBadge tone="active">
+                                <Loader2 size={13} className="spin" /> Verifying…
+                              </StatusBadge>
+                            )
+                          ) : (
+                            <StatusBadge tone={isProving ? 'active' : 'muted'}>
+                              {isProving ? (
+                                <>
+                                  <Loader2 size={13} className="spin" /> Generating Groth16 proof…
+                                </>
+                              ) : (
+                                'Proof not generated yet'
                               )}
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Extracted Text:</span>
-                            <span className="neu-secret-badge" style={{ color: isWitness ? 'var(--accent)' : 'inherit', fontWeight: 700 }}>
-                              {field.extractedValue}
-                            </span>
-                          </div>
-
-                          {isWitness && (
-                            <>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Enterprise Threshold:</span>
-                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 700 }}>
-                                  &gt;= {enterpriseSpec.thresholdValue.toLocaleString()} {enterpriseSpec.currency}
-                                </span>
-                              </div>
-
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Condition Satisfied:</span>
-                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', fontWeight: 800, color: (field.numericValue || 0) >= enterpriseSpec.thresholdValue ? 'var(--accent-secondary)' : 'var(--fg-muted)' }}>
-                                  {(field.numericValue || 0) >= enterpriseSpec.thresholdValue
-                                    ? `TRUE (${(field.numericValue || 0).toLocaleString()} >= ${enterpriseSpec.thresholdValue.toLocaleString()})`
-                                    : `FALSE (${(field.numericValue || 0).toLocaleString()} < ${enterpriseSpec.thresholdValue.toLocaleString()})`}
-                                </span>
-                              </div>
-                            </>
+                            </StatusBadge>
                           )}
-
-                          {!isWitness && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ fontSize: '0.8rem', color: 'var(--fg-muted)' }}>Classification:</span>
-                              <span style={{ fontSize: '0.78rem', color: 'var(--fg-muted)' }}>
-                                {field.classification}
+                          <KV label="Claim" value={requirementText} />
+                          <KV
+                            label="Witness (private)"
+                            value={
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                {showWitnessSecret ? witnessTarget.extractedValue : '•••••••• never leaves this device'}
+                                <button
+                                  type="button"
+                                  className="neu-pill-btn"
+                                  style={{ padding: '2px 6px', display: 'flex' }}
+                                  onClick={() => setShowWitnessSecret((v) => !v)}
+                                  aria-label={showWitnessSecret ? 'Hide witness' : 'Reveal witness'}
+                                >
+                                  {showWitnessSecret ? <EyeOff size={11} /> : <Eye size={11} />}
+                                </button>
                               </span>
-                            </div>
+                            }
+                          />
+                          <KV
+                            label="Predicate"
+                            value={
+                              <span className={witnessTarget.satisfiesThreshold ? 'neu-tone-ok' : 'neu-tone-warn'}>
+                                {witnessTarget.satisfiesThreshold ? 'TRUE · meets requirement' : 'FALSE · cannot be proven'}
+                              </span>
+                            }
+                          />
+                          <KV label="Bound to" value={`doc ${doc?.hashHex.slice(0, 10) ?? '—'}… · nonce ${enterpriseSpec.challengeNonce.slice(0, 10)}…`} />
+                          {proofResult && (
+                            <button
+                              type="button"
+                              className="neu-btn-secondary"
+                              style={{ padding: '10px 14px', fontSize: '0.8rem', gap: '8px', justifyContent: 'center' }}
+                              onClick={() => setShowProofDetails(true)}
+                            >
+                              <Binary size={15} />
+                              <span>View Cryptographic Proof Details</span>
+                            </button>
                           )}
+                        </>
+                      ) : (
+                        <>
+                          <StatusBadge tone="muted">Seal-only</StatusBadge>
+                          <span style={{ fontSize: '0.76rem', color: 'var(--fg-muted)' }}>
+                            {scenarioProofBacked
+                              ? 'No numeric witness was detected on this document, so no predicate proof is generated. The redaction is still bound into the master audit seal.'
+                              : `${scenario.label} carries no numeric claim. Redaction is bound into the master audit seal without a zero-knowledge proof.`}
+                          </span>
+                        </>
+                      ))}
 
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)', marginTop: '4px' }}>
-                            <span>Bounding Coords: [x: {field.x}, y: {field.y}, w: {field.width}, h: {field.height}]</span>
-                            <span>Page {field.page}</span>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-
-                  {scenario.id === 'aadhaar' && (
-                    <div className="neu-well" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--fg-primary)' }}>
-                        Image regions (not readable as text)
-                      </span>
-                      <div style={{ display: 'flex', gap: '6px' }}>
-                        <button type="button" className="neu-pill-btn" style={{ fontSize: '0.72rem', padding: '4px 10px' }} onClick={() => addRegionTarget('photo')}>
-                          + Photo region
-                        </button>
-                        <button type="button" className="neu-pill-btn" style={{ fontSize: '0.72rem', padding: '4px 10px' }} onClick={() => addRegionTarget('qr')}>
-                          + QR region
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Token Explorer Drawer Toggle */}
-                  <div className="neu-well" style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div
-                      onClick={() => setShowAllTokens(!showAllTokens)}
-                      style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
-                    >
-                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--fg-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <SlidersHorizontal size={14} style={{ color: 'var(--accent)' }} />
-                        <span>Document Token Index ({extractedTokens.length} detected)</span>
-                      </span>
-                      <ChevronDown
-                        size={15}
-                        style={{
-                          transform: showAllTokens ? 'rotate(180deg)' : 'none',
-                          transition: 'transform 0.2s ease',
-                          color: 'var(--fg-muted)',
-                        }}
-                      />
-                    </div>
-
-                    {showAllTokens && (
-                      <div style={{ maxHeight: '160px', overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: '6px', paddingTop: '6px' }}>
-                        {extractedTokens.map((t) => (
-                          <button
-                            key={t.id}
-                            type="button"
-                            className="neu-pill-btn"
-                            style={{ fontSize: '0.72rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                            onClick={() => handleAddTokenAsTarget(t)}
-                            title={`Click to redact: [x:${t.x}, y:${t.y}, w:${t.width}, h:${t.height}]`}
-                          >
-                            <span>{t.text}</span>
-                            <Plus size={10} />
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Stage 2 Primary CTA: Burn Pixels & Proceed to Stage 3 */}
-                  <button
-                    className="neu-btn-primary"
-                    onClick={executePixelBurn}
-                    disabled={isBurning || detectedFields.length === 0}
-                    style={{ width: '100%', padding: '12px', fontSize: '0.88rem', gap: '8px' }}
-                  >
-                    <Flame size={16} />
-                    <span>{isBurning ? 'Burning Pixels & Stripping Streams...' : 'Execute Stage 3: Physical Pixel Burn & Flatten'}</span>
-                    <ArrowRight size={16} />
-                  </button>
-                </div>
-              )}
-
-              {/* STAGE 3 VIEW IN TELEMETRY */}
-              {stage === 3 && redactionResult && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Redacted SHA-256 Preimage H(Doc_Redacted) */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.76rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent)' }}>
-                        REDACTED PREIMAGE SHA-256 H(Doc_Redacted):
-                      </span>
-                      <button
-                        className="neu-pill-btn"
-                        style={{ fontSize: '0.7rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                        onClick={copyRedactedHash}
-                      >
-                        {copiedRedacted ? <Check size={12} color="var(--accent-secondary)" /> : <Copy size={12} />}
-                        <span>{copiedRedacted ? 'Copied' : 'Copy'}</span>
-                      </button>
-                    </div>
-
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.6',
-                        color: 'var(--fg-primary)',
-                        backgroundColor: 'var(--bg-surface)',
-                        boxShadow: 'var(--shadow-inset-sm)',
-                        padding: '12px 14px',
-                        borderRadius: '10px',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {redactionResult.chunkedHash}
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.74rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                      <div>Size: {redactionResult.fileSizeBytes.toLocaleString()} bytes</div>
-                      <div>Burn Time: {redactionResult.durationMs} ms</div>
-                      <div>Format: PDF Raster XObject</div>
-                      <div>Entropy Leak: 0.00%</div>
-                    </div>
-                  </div>
-
-                  {/* Sanitization Audit Telemetry */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Lock size={16} style={{ color: 'var(--accent-secondary)' }} />
-                        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                          Non-Extractable Sanitization Verification
-                        </span>
-                      </div>
-                      <span className="neu-claim-badge" style={{ color: 'var(--accent-secondary)' }}>
-                        VERIFIED ZERO LEAK
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Text Streams in Sanitized PDF:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent-secondary)' }}>
-                          {redactionResult.textStreamCount} (100% STRIPPED)
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Pixel Density in Mask Zones:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                          100% Solid Pitch-Black (#000000)
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Obliterated Targets:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent)' }}>
-                          {redactionResult.burnedZonesCount} Zones Destroyed
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Root Preimage H(Doc) Bond:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', color: 'var(--fg-muted)' }}>
-                          {doc?.hashHex.substring(0, 16)}...
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Actions: Download Sanitized PDF & Proceed to ZK Proving */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <button
-                      className="neu-btn-primary"
-                      onClick={executeZkProof}
-                      disabled={isProving}
-                      style={{ width: '100%', padding: '12px', fontSize: '0.88rem', gap: '8px' }}
-                    >
-                      <Cpu size={16} className={isProving ? 'spin' : ''} />
-                      <span>{isProving ? 'Compiling In-Browser Groth16 Proof...' : 'Proceed to Stage 4: Groth16 ZK Prover Engine'}</span>
-                      <ArrowRight size={16} />
-                    </button>
-
-                    <button
-                      className="neu-btn-secondary"
-                      onClick={() => downloadFile(redactionResult.redactedPdfBytes, `Redacted_${doc?.fileName || 'document.pdf'}`, 'application/pdf')}
-                      style={{ width: '100%', padding: '10px', fontSize: '0.82rem', gap: '8px' }}
-                    >
-                      <Download size={14} />
-                      <span>Download Sanitized Redacted PDF</span>
-                    </button>
+                    {stage === 5 &&
+                      (masterSeal ? (
+                        <>
+                          <StatusBadge tone="ok">
+                            <Fingerprint size={13} /> Master audit seal anchored
+                          </StatusBadge>
+                          <HashBlock value={formatChunkedHash(masterSeal.sealHex)} onCopy={copySeal} copied={copiedSeal} />
+                          <Accordion title="Seal factors" summary={auditPackage?.redactionMode === 'PROOF_BACKED' ? 'proof-backed' : 'seal-only'} icon={<Binary size={14} />}>
+                            <KV label="H(Doc_redacted)" value={`${masterSeal.docRedactedHash.slice(0, 18)}…`} />
+                            <KV label="Geometry" value={`${masterSeal.bboxSummary.slice(0, 18)}…`} />
+                            <KV label="Commitment C" value={masterSeal.commitment ? `${masterSeal.commitment.slice(0, 18)}…` : 'none (seal-only)'} />
+                            <KV label="Proof digest" value={masterSeal.proofDigest ? `${masterSeal.proofDigest.slice(0, 18)}…` : 'none (seal-only)'} />
+                          </Accordion>
+                          <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>
+                            {verifierRequest
+                              ? `Hand the bundle back to ${verifierRequest.requester}: it receives the redacted PDF and this receipt, never the original.`
+                              : 'Download the audit package and verify it independently in the auditor portal.'}
+                          </span>
+                        </>
+                      ) : (
+                        <StatusBadge tone="muted">Not sealed yet</StatusBadge>
+                      ))}
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* STAGE 4 VIEW IN TELEMETRY */}
-              {stage === 4 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Invalidation Notice Card */}
-                  {invalidationMessage && (
-                    <div className="neu-well" style={{ padding: '12px 14px', borderLeft: '3px solid var(--accent)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700, color: 'var(--accent)' }}>
-                        <AlertTriangle size={14} />
-                        <span>SESSION PARAMETERS MODIFIED</span>
-                      </div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>
-                        {invalidationMessage}
-                      </div>
-                    </div>
-                  )}
+            {/* Stage 6: Standalone Enterprise Verifier Portal */}
+            {stage === 6 && <VerifierPortalView initialPackage={auditPackage} onNavigateToStage={(s) => setStage(s as StageNumber)} />}
 
-                  {/* Prover Constraint Failure Error Card */}
-                  {proverError && (
-                    <div className="neu-well" style={{ padding: '12px 14px', borderLeft: '3px solid #EF4444', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700, color: '#EF4444' }}>
-                        <AlertTriangle size={14} />
-                        <span>CIRCOM CONSTRAINT FAILURE</span>
-                      </div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--fg-primary)' }}>
-                        {proverError}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Private Witness Claim & Predicate Evaluation */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <Lock size={15} style={{ color: 'var(--accent)' }} />
-                        <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                          Confidential Witness &amp; Enterprise Predicate
-                        </span>
-                      </div>
-                      <span className="neu-claim-badge">
-                        CIRCOM WITNESS ISOLATE
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8rem' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Target Field:</span>
-                        <span style={{ fontWeight: 700, color: 'var(--fg-primary)' }}>{enterpriseSpec.targetField}</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Enterprise Threshold:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--fg-primary)' }}>
-                          &ge; {enterpriseSpec.thresholdValue.toLocaleString()} {enterpriseSpec.currency}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Private Secret in RAM:</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--accent)', letterSpacing: showWitnessSecret ? 'normal' : '2px' }}>
-                            {showWitnessSecret
-                              ? typeof witnessTarget?.numericValue === 'number'
-                                ? (enterpriseSpec.currency === 'years'
-                                    ? `${witnessTarget.numericValue} years`
-                                    : `${enterpriseSpec.currency} ${witnessTarget.numericValue.toLocaleString()}`.trim())
-                                : '—'
-                              : '██████████'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setShowWitnessSecret(!showWitnessSecret)}
-                            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', display: 'flex', alignItems: 'center', padding: '2px' }}
-                            title={showWitnessSecret ? 'Mask secret' : 'Reveal secret locally'}
-                          >
-                            {showWitnessSecret ? <EyeOff size={13} /> : <Eye size={13} />}
-                          </button>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Document Root Binding:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--fg-muted)' }}>
-                          {doc ? `${doc.hashHex.slice(0, 10)}...${doc.hashHex.slice(-6)}` : 'Awaiting Doc'}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--fg-muted)' }}>Challenge Nonce:</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--fg-muted)' }}>
-                          {enterpriseSpec.challengeNonce.slice(0, 14)}...
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Prover Execution Control */}
-                  {!proofResult ? (
-                    <button
-                      className="neu-btn-primary"
-                      onClick={executeZkProof}
-                      disabled={isProving}
-                      style={{ width: '100%', padding: '13px', fontSize: '0.88rem', gap: '8px' }}
-                    >
-                      <Cpu size={16} className={isProving ? 'spin' : ''} />
-                      <span>{isProving ? 'Evaluating Circom R1CS Constraints in WASM...' : 'Generate In-Browser Groth16 Proof'}</span>
-                    </button>
-                  ) : (
-                    <>
-                      {/* Poseidon Commitment Public Signal Card */}
-                      <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.76rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent)' }}>
-                            POSEIDON COMMITMENT C = H(actual, r):
-                          </span>
-                          <span className="neu-hash-pill">BN254 SCALAR</span>
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.78rem',
-                            lineHeight: '1.5',
-                            color: 'var(--fg-primary)',
-                            backgroundColor: 'var(--bg-surface)',
-                            boxShadow: 'var(--shadow-inset-sm)',
-                            padding: '10px 12px',
-                            borderRadius: '10px',
-                            wordBreak: 'break-all',
-                          }}
-                        >
-                          {proofResult.commitment}
-                        </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                          <div>Prover Latency: {proofResult.durationMs} ms</div>
-                          <div>Curve: {proofResult.curve}</div>
-                          <div>Blinding Salt: {proofResult.blindingSalt.slice(0, 16)}...</div>
-                          <div>Public Signals: {proofResult.publicSignals.length}</div>
-                        </div>
-                      </div>
-
-                      {/* Session Binding Context Card */}
-                      <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.76rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent)' }}>
-                            SESSION CONTEXT BINDING DIGEST:
-                          </span>
-                          <span className="neu-hash-pill">SHA-256 LOAD-SEAL</span>
-                        </div>
-                        <div
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.76rem',
-                            lineHeight: '1.5',
-                            color: 'var(--fg-primary)',
-                            backgroundColor: 'var(--bg-surface)',
-                            boxShadow: 'var(--shadow-inset-sm)',
-                            padding: '10px 12px',
-                            borderRadius: '10px',
-                            wordBreak: 'break-all',
-                          }}
-                        >
-                          {proofResult.sessionBinding}
-                        </div>
-                        <div style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                          Binds Document Root Digest, Enterprise Requester, Threshold, Nonce &amp; Poseidon Commitment.
-                        </div>
-                      </div>
-
-                      {/* Cryptographic Groth16 Proof Points Card */}
-                      <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <Binary size={15} style={{ color: 'var(--accent)' }} />
-                            <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                              Groth16 Proof Points (&pi;_a, &pi;_b, &pi;_c)
-                            </span>
-                          </div>
-                          <button
-                            className="neu-pill-btn"
-                            style={{ fontSize: '0.7rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                            onClick={() => {
-                              navigator.clipboard.writeText(JSON.stringify(proofResult.proof, null, 2));
-                              setCopiedProof(true);
-                              setTimeout(() => setCopiedProof(false), 2000);
-                            }}
-                          >
-                            {copiedProof ? <Check size={12} color="var(--accent-secondary)" /> : <Copy size={12} />}
-                            <span>{copiedProof ? 'Copied' : 'Copy Proof'}</span>
-                          </button>
-                        </div>
-
-                        <div
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '0.72rem',
-                            color: 'var(--fg-primary)',
-                            backgroundColor: 'var(--bg-surface)',
-                            boxShadow: 'var(--shadow-inset-sm)',
-                            padding: '10px 12px',
-                            borderRadius: '10px',
-                            maxHeight: '120px',
-                            overflowY: 'auto',
-                          }}
-                        >
-                          <div><strong>&pi;_a[0]:</strong> {proofResult.proof.pi_a[0]}</div>
-                          <div><strong>&pi;_a[1]:</strong> {proofResult.proof.pi_a[1]}</div>
-                          <div style={{ marginTop: '4px' }}><strong>&pi;_b[0][0]:</strong> {proofResult.proof.pi_b[0][0]}</div>
-                          <div style={{ marginTop: '4px' }}><strong>&pi;_c[0]:</strong> {proofResult.proof.pi_c[0]}</div>
-                        </div>
-
-                        {/* Local In-Browser Verification Soundness Status */}
-                        {proofVerified ? (
-                          <div className="neu-verified-well">
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--accent-secondary)', fontWeight: 700 }}>
-                              <CheckCircle2 size={16} />
-                              <span>Proof Verified Sound in Local WASM Sandbox ({proofVerifyLatencyMs ?? 25}ms)</span>
-                            </div>
-                            <span className="neu-claim-badge" style={{ color: 'var(--accent-secondary)' }}>
-                              VALIDATED
-                            </span>
-                          </div>
-                        ) : (
-                          <div className="neu-well" style={{ padding: '10px 14px', borderLeft: '3px solid #EF4444', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: '#EF4444', fontWeight: 700 }}>
-                              <AlertTriangle size={16} />
-                              <span>Cryptographic Verification Failed</span>
-                            </div>
-                            <span className="neu-claim-badge" style={{ color: '#EF4444' }}>
-                              INVALID
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Action Buttons: Primary Proceed + Verify Again + Regenerate */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <button
-                          className="neu-btn-primary"
-                          onClick={executeMasterSeal}
-                          disabled={isSealing || !proofVerified}
-                          style={{ width: '100%', padding: '13px', fontSize: '0.88rem', gap: '8px' }}
-                        >
-                          <Fingerprint size={16} className={isSealing ? 'spin' : ''} />
-                          <span>{isSealing ? 'Welding Cryptographic Factors...' : 'Execute Stage 5: Master Audit Seal & Package'}</span>
-                          <ArrowRight size={16} />
-                        </button>
-
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                          <button
-                            className="neu-btn-secondary"
-                            onClick={executeVerifyAgain}
-                            disabled={isVerifyingAgain}
-                            style={{ padding: '9px 12px', fontSize: '0.76rem', gap: '6px', justifyContent: 'center' }}
-                            title="Run independent Groth16 cryptographic verification procedure"
-                          >
-                            <CheckCircle2 size={13} className={isVerifyingAgain ? 'spin' : ''} style={{ color: 'var(--accent-secondary)' }} />
-                            <span>{isVerifyingAgain ? 'Verifying...' : 'Verify Again'}</span>
-                          </button>
-
-                          <button
-                            className="neu-btn-secondary"
-                            onClick={executeZkProof}
-                            disabled={isProving}
-                            style={{ padding: '9px 12px', fontSize: '0.76rem', gap: '6px', justifyContent: 'center' }}
-                            title="Re-run witness evaluation with fresh scalar salt"
-                          >
-                            <RefreshCw size={12} className={isProving ? 'spin' : ''} />
-                            <span>Re-Prove (Fresh Salt)</span>
-                          </button>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* STAGE 5 VIEW IN TELEMETRY */}
-              {stage === 5 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {/* Master Audit Seal Hash */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.76rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--accent-secondary)' }}>
-                        QUAD-FACTOR MASTER AUDIT SEAL:
-                      </span>
-                      {masterSeal && (
-                        <button
-                          className="neu-pill-btn"
-                          style={{ fontSize: '0.7rem', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                          onClick={() => {
-                            navigator.clipboard.writeText(masterSeal.sealHex);
-                            setCopiedSeal(true);
-                            setTimeout(() => setCopiedSeal(false), 2000);
-                          }}
-                        >
-                          {copiedSeal ? <Check size={12} color="var(--accent-secondary)" /> : <Copy size={12} />}
-                          <span>{copiedSeal ? 'Copied' : 'Copy Seal'}</span>
-                        </button>
-                      )}
-                    </div>
-
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '0.8rem',
-                        lineHeight: '1.6',
-                        color: 'var(--fg-primary)',
-                        backgroundColor: 'var(--bg-surface)',
-                        boxShadow: 'var(--shadow-inset-sm)',
-                        padding: '12px 14px',
-                        borderRadius: '10px',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {masterSeal ? formatChunkedHash(masterSeal.sealHex) : 'Awaiting seal generation...'}
-                    </div>
-
-                    {/* Visual Breakdown of the 4 Welded Factors */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.73rem', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Factor 1 [Raster Hash]:</span>
-                        <span style={{ color: 'var(--fg-primary)' }}>{redactionResult?.redactedHashHex.slice(0, 14)}...</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Factor 2 [Spatial BBoxes]:</span>
-                        <span style={{ color: 'var(--fg-primary)' }}>{detectedFields.length} Zones Welded</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Factor 3 [Poseidon Commit]:</span>
-                        <span style={{ color: 'var(--fg-primary)' }}>{proofResult?.commitment.slice(0, 14)}...</span>
-                      </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Factor 4 [Groth16 &pi; Digest]:</span>
-                        <span style={{ color: 'var(--fg-primary)' }}>{masterSeal?.proofDigest.slice(0, 14)}...</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Interactive Enterprise Auditor Verification Simulator */}
-                  <div className="neu-well" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        <ShieldCheck size={16} style={{ color: 'var(--accent-secondary)' }} />
-                        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--fg-primary)' }}>
-                          Verifier Simulator (Enterprise Auditor Perspective)
-                        </span>
-                      </div>
-                      <span className="neu-claim-badge" style={{ color: 'var(--accent-secondary)' }}>
-                        ZERO PRIVACY LEAK
-                      </span>
-                    </div>
-
-                    <p style={{ fontSize: '0.76rem', color: 'var(--fg-muted)', lineHeight: '1.4' }}>
-                      Simulate how an external verifier audits this package. The verifier checks proof soundness and seal integrity without ever receiving the raw document.
-                    </p>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                      <button
-                        type="button"
-                        className="neu-btn-secondary"
-                        onClick={() => simulateAuditVerification(false)}
-                        disabled={isAuditing || !auditPackage}
-                        style={{ fontSize: '0.76rem', padding: '8px 10px', gap: '4px' }}
-                      >
-                        <CheckCircle2 size={13} style={{ color: 'var(--accent-secondary)' }} />
-                        <span>Audit Valid Package</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        className="neu-btn-secondary"
-                        onClick={() => simulateAuditVerification(true)}
-                        disabled={isAuditing || !auditPackage}
-                        style={{ fontSize: '0.76rem', padding: '8px 10px', gap: '4px' }}
-                      >
-                        <AlertTriangle size={13} style={{ color: 'var(--accent)' }} />
-                        <span>Simulate 1-px Tamper</span>
-                      </button>
-                    </div>
-
-                    {auditCheckResult && (
-                      <div
-                        className="neu-well"
-                        style={{
-                          padding: '12px 14px',
-                          fontSize: '0.76rem',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '6px',
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-                          <span>Master Seal Cryptographic Match:</span>
-                          <span style={{ color: auditCheckResult.sealValid ? 'var(--accent-secondary)' : 'var(--fg-muted)' }}>
-                            {auditCheckResult.sealValid ? 'VERIFIED (100% MATCH)' : 'FAILED (GEOMETRY TAMPER DETECTED)'}
-                          </span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700 }}>
-                          <span>Groth16 zk-SNARK Validity:</span>
-                          <span style={{ color: auditCheckResult.proofValid ? 'var(--accent-secondary)' : 'var(--fg-muted)' }}>
-                            {auditCheckResult.proofValid ? 'TRUE (SOUNDNESS CONFIRMED)' : 'INVALID'}
-                          </span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--fg-muted)', fontSize: '0.7rem' }}>
-                          <span>Confidential Data Leaked:</span>
-                          <span style={{ color: 'var(--accent-secondary)', fontWeight: 700 }}>0 BYTES (ZERO KNOWLEDGE)</span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Final Export Actions */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <button
-                      className="neu-btn-primary"
-                      onClick={handleDownloadAuditPackage}
-                      disabled={!auditPackage}
-                      style={{ width: '100%', padding: '13px', fontSize: '0.88rem', gap: '8px' }}
-                    >
-                      <Download size={16} />
-                      <span>Download Complete Zeroara Audit Package (.json)</span>
-                    </button>
-
-                    <button
-                      className="neu-btn-secondary"
-                      onClick={() => redactionResult && downloadFile(redactionResult.redactedPdfBytes, `Redacted_${doc?.fileName || 'document.pdf'}`, 'application/pdf')}
-                      disabled={!redactionResult}
-                      style={{ width: '100%', padding: '10px', fontSize: '0.82rem', gap: '8px' }}
-                    >
-                      <Download size={14} />
-                      <span>Download Sanitized Redacted PDF</span>
-                    </button>
-
-                    {auditPackage && (
-                      <button
-                        className="neu-btn-primary"
-                        onClick={() => setStage(6)}
-                        style={{
-                          width: '100%',
-                          padding: '13px',
-                          fontSize: '0.86rem',
-                          gap: '8px',
-                          marginTop: '4px',
-                          backgroundColor: 'var(--bg-surface)',
-                          color: 'var(--accent)',
-                        }}
-                      >
-                        <ShieldCheck size={16} />
-                        <span>Proceed to Stage 6: Enterprise Verifier Portal →</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* Stage 7 / 8: scaffolds reachable via ?view= only */}
+            {stage === 7 && <HardwareEnclaveView onNavigateToStage={(s) => setStage(s as StageNumber)} />}
+            {stage === 8 && <TransportProtocolView onNavigateToStage={(s) => setStage(s as StageNumber)} />}
           </div>
-        )}
-
-        {/* Stage 6: Standalone Enterprise Verifier Portal */}
-        {stage === 6 && (
-          <VerifierPortalView
-            initialPackage={auditPackage}
-            onNavigateToStage={(s) => setStage(s as StageNumber)}
-          />
-        )}
-
-        {/* Stage 7: Hardware Enclave & TPM 2.0 (Scaffolded Blank Page) */}
-        {stage === 7 && (
-          <HardwareEnclaveView
-            onNavigateToStage={(s) => setStage(s as StageNumber)}
-          />
-        )}
-
-        {/* Stage 8: Web-to-Desktop Transport Protocol (Scaffolded Blank Page) */}
-        {stage === 8 && (
-          <TransportProtocolView
-            onNavigateToStage={(s) => setStage(s as StageNumber)}
-          />
-        )}
         </div>
       </main>
+
+      {/* Raw cryptographic telemetry lives here, out of the main flow */}
+      <Drawer open={showProofDetails && !!proofResult} title="Cryptographic proof details" onClose={() => setShowProofDetails(false)}>
+        {proofResult && (
+          <>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+              <StatusBadge tone={proofVerified ? 'ok' : proofVerified === false ? 'warn' : 'muted'}>
+                {proofVerified ? (
+                  <>
+                    <CheckCircle2 size={13} /> Proof Validated ({proofLatency ?? 0} ms)
+                  </>
+                ) : proofVerified === false ? (
+                  'Proof did not verify'
+                ) : (
+                  'Unverified'
+                )}
+              </StatusBadge>
+              <span className="neu-hash-pill">
+                {proofResult.protocol} · {proofResult.curve}
+              </span>
+              <span className="neu-hash-pill">proved in {proofResult.durationMs} ms</span>
+              <span className="neu-hash-pill">{proofResult.generatedAt}</span>
+            </div>
+            <div>
+              <span style={SMALL_LABEL}>Poseidon commitment C = Poseidon(witness, salt)</span>
+              <HashBlock value={proofResult.commitment} small />
+            </div>
+            <div>
+              <span style={SMALL_LABEL}>Session binding (document digest ‖ requester ‖ purpose ‖ threshold ‖ nonce)</span>
+              <HashBlock value={proofResult.sessionBinding} small />
+            </div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={SMALL_LABEL}>Blinding salt (secret)</span>
+                <button type="button" className="neu-pill-btn" style={{ fontSize: '0.68rem', padding: '3px 9px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={() => setShowWitnessSecret((v) => !v)}>
+                  {showWitnessSecret ? <EyeOff size={11} /> : <Eye size={11} />} {showWitnessSecret ? 'Hide' : 'Reveal'}
+                </button>
+              </div>
+              <HashBlock value={showWitnessSecret ? proofResult.blindingSalt : '•'.repeat(48)} small />
+            </div>
+            <div>
+              <span style={SMALL_LABEL}>Proof π · Groth16 points (πA, πB, πC)</span>
+              <pre className="neu-code-block" style={{ maxHeight: '220px', overflow: 'auto', fontSize: '0.68rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {JSON.stringify(proofResult.proof, null, 2)}
+              </pre>
+            </div>
+            <div>
+              <span style={SMALL_LABEL}>Public signals ({proofResult.publicSignals.length})</span>
+              <pre className="neu-code-block" style={{ maxHeight: '120px', overflow: 'auto', fontSize: '0.68rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {JSON.stringify(proofResult.publicSignals, null, 2)}
+              </pre>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <button type="button" className="neu-btn-secondary" style={{ padding: '8px 12px', fontSize: '0.76rem', gap: '6px' }} onClick={copyProof}>
+                {copiedProof ? <Check size={13} /> : <Copy size={13} />}
+                <span>{copiedProof ? 'Proof copied' : 'Copy proof JSON'}</span>
+              </button>
+              <button type="button" className="neu-btn-secondary" style={{ padding: '8px 12px', fontSize: '0.76rem', gap: '6px' }} onClick={executeVerifyAgain} disabled={isVerifyingAgain}>
+                {isVerifyingAgain ? <Loader2 size={13} className="spin" /> : <ShieldCheck size={13} />}
+                <span>Verify again</span>
+              </button>
+              <button
+                type="button"
+                className="neu-btn-secondary"
+                style={{ padding: '8px 12px', fontSize: '0.76rem', gap: '6px' }}
+                onClick={() => {
+                  setShowProofDetails(false);
+                  executeZkProof();
+                }}
+                disabled={isProving}
+              >
+                <RefreshCw size={13} />
+                <span>Re-generate proof</span>
+              </button>
+            </div>
+          </>
+        )}
+      </Drawer>
     </div>
   );
 }
