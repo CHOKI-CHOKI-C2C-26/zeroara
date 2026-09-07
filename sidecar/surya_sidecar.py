@@ -35,13 +35,25 @@ def get_predictor():
     global _predictor, _engine_version
     with _predictor_lock:
         if _predictor is None:
-            from surya.detection import DetectionPredictor
-            from surya.recognition import RecognitionPredictor
             try:
                 from importlib.metadata import version
                 _engine_version = version("surya-ocr")
             except Exception:
                 pass
+            # Surya v2 uses a VLM inference manager plus vLLM/llama.cpp and a
+            # different response schema. Silently attempting the v1 calls
+            # produces confusing 500s, so keep this local-only sidecar pinned
+            # to its documented pure-PyTorch v1 contract.
+            try:
+                if int(_engine_version.split(".", 1)[0]) >= 2:
+                    raise RuntimeError(
+                        "Surya v2 is incompatible with this local v1 sidecar; "
+                        "install surya-ocr>=0.14,<0.15 or deploy a dedicated v2 adapter"
+                    )
+            except ValueError:
+                pass
+            from surya.detection import DetectionPredictor
+            from surya.recognition import RecognitionPredictor
             _predictor = (DetectionPredictor(), RecognitionPredictor())
         return _predictor
 

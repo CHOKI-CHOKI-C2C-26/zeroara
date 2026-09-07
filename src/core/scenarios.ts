@@ -117,7 +117,7 @@ export const RE_CURRENCY =
 const L_NAME = /\bname\b/i;
 const L_FATHER = /\bfather'?s?\b/i;
 // Scanner text layers misread the label: ".4ddress:", "Addres.~:"
-const L_ADDRESS = /(?:\b|[.,]\s?)(?:a|4)ddres+\b/i;
+const L_ADDRESS = /(?:\b|[.,]\s?)(?:a|4)ddres+\b|(?:पता)/i;
 // No leading boundary: OCR often fuses the label ("UROLLNO", "ROLLNO").
 const L_ROLL = /(?:roll\s*(?:no|number)?|enrol?ment\s*(?:no|number)?)\b/i;
 const L_REG = /\b(?:reg(?:istration)?\.?\s*(?:no|number)?|registration)\b/i;
@@ -127,7 +127,7 @@ const L_EMPID = /\b(?:emp(?:loyee)?\.?\s*(?:id|code|no)|staff\s*id)\b/i;
 const L_EMPLOYER = /\b(?:employer|company|organi[sz]ation|firm)\b/i;
 const L_DOCNO = /\b(?:document\s*(?:no|number)|id\s*(?:no|number)|reference\s*(?:no|number))\b/i;
 const L_VID = /\b(?:vid|virtual id|enrol?ment no)\b/i;
-const L_GUARDIAN = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
+const L_GUARDIAN = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b|(?:पिता|माता|पति|संरक्षक|देखरेख)/i;
 const L_CUSTOMER = /\b(?:customer\s*(?:id|no|number)|cif(?:\s*(?:no|number))?|crn)\b/i;
 const L_UAN = /\bUAN\b/i;
 

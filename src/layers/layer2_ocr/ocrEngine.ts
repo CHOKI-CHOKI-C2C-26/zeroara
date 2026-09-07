@@ -27,6 +27,27 @@ const OCR_MAX_WIDTH = 2200; // hard cap to bound Tesseract Wasm memory
 const TEXT_LAYER_MIN_TOKENS = 3; // fewer text items than this (and little text) => scanned page -> OCR
 const TEXT_LAYER_MIN_CHARS = 24; // a page with this much real text is digital, not a scan
 
+interface TesseractProfile {
+  /** Local Tesseract language packs. Aadhaar commonly has both Hindi and English. */
+  languages: string;
+  /** Tesseract page segmentation mode; 11 is sparse text, suited to ID cards. */
+  pageSegMode?: number;
+}
+
+function tesseractProfileForScenario(scenarioId?: string): TesseractProfile {
+  // Do not impose Hindi-model memory/latency on every document. Aadhaar cards
+  // commonly print Hindi next to English, and their scattered card layout
+  // benefits from sparse-text segmentation. Other documents retain the
+  // established English automatic-layout path.
+  if (scenarioId === 'aadhaar') return { languages: 'eng+hin', pageSegMode: 11 };
+  return { languages: 'eng' };
+}
+
+function tesseractEngineLabel(languages: string, source: 'Raster Image' | 'Scanned PDF'): string {
+  const locale = languages === 'eng+hin' ? 'English + Hindi' : 'English';
+  return `Tesseract LSTM · ${source} (OpenCV cleaned · ${locale})`;
+}
+
 interface RawOcrWord {
   text: string;
   x0: number;
@@ -36,11 +57,28 @@ interface RawOcrWord {
   confidence: number;
 }
 
+// Aadhaar details may use Devanagari numerals. Normalizing them at the OCR
+// boundary keeps the original pixels/geometry untouched while letting the
+// existing number, Aadhaar-ID, and DOB detectors work consistently. Arabic
+// numerals are included for other multilingual identity documents.
+const INDIC_DIGIT_TO_ASCII: Record<string, string> = {
+  '०': '0', '१': '1', '२': '2', '३': '3', '४': '4', '५': '5', '६': '6', '७': '7', '८': '8', '९': '9',
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+};
+
+function normalizeOcrText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[०-९٠-٩]/g, (digit) => INDIC_DIGIT_TO_ASCII[digit] || digit)
+    // OCR sometimes returns invisible joiners inside an otherwise valid field.
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .trim();
+}
+
 function collectTesseractWords(data: any): RawOcrWord[] {
   const out: RawOcrWord[] = [];
   const push = (w: any) => {
     if (!w || !w.bbox) return;
-    const text = (w.text || '').trim();
+    const text = normalizeOcrText(w.text);
     if (!text) return;
     out.push({
       text,
@@ -69,36 +107,61 @@ function collectTesseractWords(data: any): RawOcrWord[] {
 
 async function runTesseract(
   image: HTMLCanvasElement,
-  onProgress?: OcrProgressFn
-): Promise<{ words: RawOcrWord[]; rawText: string }> {
+  onProgress?: OcrProgressFn,
+  profile: TesseractProfile = { languages: 'eng' }
+): Promise<{ words: RawOcrWord[]; rawText: string; languages: string }> {
   const { createWorker } = await import('tesseract.js');
-  const worker: any = await createWorker('eng', 1, {
-    workerPath: '/tesseract/worker.min.js',
-    corePath: '/tesseract', // directory: tesseract.js v7 appends its own *.wasm.js core loader
-    langPath: '/tesseract',
-    gzip: true,
-    logger: (m: any) => {
-      if (onProgress && typeof m.progress === 'number') {
-        onProgress(Math.round(m.progress * 100), m.status || 'recognizing');
-      }
-    },
-  });
-
-  try {
-    await worker.setParameters({
-      preserve_interword_spaces: '1',
-      user_defined_dpi: '300',
+  const createLocalWorker = async (languages: string) =>
+    createWorker(languages, 1, {
+      workerPath: '/tesseract/worker.min.js',
+      corePath: '/tesseract', // directory: tesseract.js v7 appends its own *.wasm.js core loader
+      langPath: '/tesseract',
+      gzip: true,
+      logger: (m: any) => {
+        if (onProgress && typeof m.progress === 'number') {
+          onProgress(Math.round(m.progress * 100), m.status || 'recognizing');
+        }
+      },
     });
-  } catch {
-    // parameter tuning is best-effort
+
+  let languages = profile.languages;
+  let worker: any;
+  try {
+    worker = await createLocalWorker(languages);
+  } catch (error) {
+    // An older cached deployment may be missing the optional Hindi pack. Do
+    // not fail the document pipeline: retain the previous English fallback.
+    if (languages === 'eng') throw error;
+    console.warn(`Tesseract language pack "${languages}" unavailable; using English only.`, error);
+    languages = 'eng';
+    worker = await createLocalWorker(languages);
   }
 
-  // tesseract.js v6+: word/line geometry is only returned when the `blocks`
-  // output is requested explicitly (it is off by default).
-  const ret: any = await worker.recognize(image, {}, { text: true, blocks: true });
-  await worker.terminate();
-
-  return { words: collectTesseractWords(ret.data), rawText: ret.data?.text || '' };
+  try {
+    try {
+      await worker.setParameters({
+        preserve_interword_spaces: '1',
+        user_defined_dpi: '300',
+        tessedit_pageseg_mode: String(profile.pageSegMode ?? 3),
+      });
+    } catch (error) {
+      // Parameter tuning is best-effort. Recognition remains available on an
+      // older runtime even if it rejects a newer page-segmentation setting.
+      console.warn('Tesseract parameter tuning was unavailable; using engine defaults.', error);
+    }
+    // tesseract.js v6+: word/line geometry is only returned when the `blocks`
+    // output is requested explicitly (it is off by default).
+    const ret: any = await worker.recognize(image, {}, { text: true, blocks: true });
+    return {
+      words: collectTesseractWords(ret.data),
+      rawText: normalizeOcrText(ret.data?.text),
+      languages,
+    };
+  } finally {
+    // A failed recognition used to leave the Wasm worker alive. Always release
+    // it before the user retries another photograph.
+    await worker.terminate();
+  }
 }
 
 function mapWordsToTokens(
@@ -196,7 +259,7 @@ async function ocrViaSurya(
     let idx = 0;
 
     for (const line of lines) {
-      const ltext = String(line?.text ?? '').trim();
+      const ltext = normalizeOcrText(line?.text);
       if (ltext) pieces.push(ltext);
       const lconf = norm(line?.confidence);
       const words: any[] | null =
@@ -204,7 +267,7 @@ async function ocrViaSurya(
 
       if (words) {
         for (const w of words) {
-          const t = String(w?.text ?? '').trim();
+          const t = normalizeOcrText(w?.text);
           if (!t) continue;
           const bb = w?.bbox || line?.bbox || [0, 0, 0, 0];
           tokens.push({
@@ -284,7 +347,8 @@ async function extractPdfDocument(
   fileBytes: Uint8Array,
   canvas: HTMLCanvasElement,
   onProgress?: OcrProgressFn,
-  pdfPassword?: string
+  pdfPassword?: string,
+  scenarioId?: string
 ): Promise<ExtractionCore> {
   const loadingTask = (pdfjs as any).getDocument({
     data: fileBytes.slice(),
@@ -310,6 +374,7 @@ async function extractPdfDocument(
   let usedTextLayer = false;
   let usedSurya = false;
   let usedTesseract = false;
+  let tesseractLanguages = 'eng';
 
   // Every page is processed; the single canvas is reused and its pixels are
   // captured per page so burn/overlays operate on exactly what OCR saw.
@@ -412,9 +477,13 @@ async function extractPdfDocument(
       onProgress?.(Math.round(base + (p * 0.4 * span) / 100), st, pageLabel)
     );
     drawCleanedToDisplay(canvas, cleaned);
-    const { words, rawText } = await runTesseract(cleaned, (p, st) =>
-      onProgress?.(Math.round(base + ((40 + p * 0.6) * span) / 100), st, pageLabel)
+    const tesseract = await runTesseract(
+      cleaned,
+      (p, st) => onProgress?.(Math.round(base + ((40 + p * 0.6) * span) / 100), st, pageLabel),
+      tesseractProfileForScenario(scenarioId)
     );
+    tesseractLanguages = tesseract.languages;
+    const { words, rawText } = tesseract;
     const factor = canvas.width / Math.max(1, cleaned.width);
     allTokens.push(...mapWordsToTokens(words, factor, 'ocr_token', pageNum));
     allTextPieces.push(rawText);
@@ -434,7 +503,7 @@ async function extractPdfDocument(
   const engineLabel = usedSurya
     ? `Surya OCR · Local Sidecar (127.0.0.1)${textNote}`
     : usedTesseract
-      ? `Tesseract LSTM · Scanned PDF (OpenCV cleaned)${textNote}`
+      ? `${tesseractEngineLabel(tesseractLanguages, 'Scanned PDF')}${textNote}`
       : 'pdf.js Vector Text Matrix · Native Spatial';
 
   return {
@@ -478,7 +547,8 @@ function loadImageElement(file: File): Promise<HTMLImageElement> {
 async function extractImageDocument(
   file: File,
   canvas: HTMLCanvasElement,
-  onProgress?: OcrProgressFn
+  onProgress?: OcrProgressFn,
+  scenarioId?: string
 ): Promise<ExtractionCore> {
   const img = await loadImageElement(file);
   const naturalW = Math.max(1, img.naturalWidth);
@@ -525,7 +595,12 @@ async function extractImageDocument(
   const cleaned = await preprocessForOcr(off, (p, st) => onProgress?.(Math.round(p * 0.4), st));
   drawCleanedToDisplay(canvas, cleaned);
   snapshot();
-  const { words, rawText } = await runTesseract(cleaned, (p, st) => onProgress?.(40 + Math.round(p * 0.6), st));
+  const tesseract = await runTesseract(
+    cleaned,
+    (p, st) => onProgress?.(40 + Math.round(p * 0.6), st),
+    tesseractProfileForScenario(scenarioId)
+  );
+  const { words, rawText } = tesseract;
   const factor = canvas.width / Math.max(1, cleaned.width);
   const tokens = mapWordsToTokens(words, factor, 'ocr_token', 1);
 
@@ -538,7 +613,7 @@ async function extractImageDocument(
     numPages: 1,
     usedOcrFallback: true,
     pageRasters,
-    engineLabel: 'Tesseract LSTM · Raster Image (OpenCV cleaned)',
+    engineLabel: tesseractEngineLabel(tesseract.languages, 'Raster Image'),
   };
 }
 
@@ -857,15 +932,22 @@ function clusterByGap(line: ExtractedSpatialToken[]): ExtractedSpatialToken[][] 
   return clusters;
 }
 
-const RE_BIRTH_LINE = /\b(?:dob|d\.o\.b|date of birth|year of birth|yob|birth)\b/i;
+const RE_BIRTH_LINE = /\b(?:dob|d\.o\.b|date of birth|year of birth|yob|birth)\b|(?:जन्म\s*(?:तिथि|तारीख|दिन|वर्ष)?)/i;
 const RE_DEVANAGARI = /[\u0900-\u097F]/;
-const RE_AADHAAR_BOILERPLATE = /government of india|unique identification|aadhaar|\bindia\b|proof of identity|citizenship|authority|\bmera\b/i;
+const RE_AADHAAR_BOILERPLATE = /government of india|unique identification|aadhaar|\bindia\b|proof of identity|citizenship|authority|\bmera\b|भारत सरकार|विशिष्ट पहचान|मेरा आधार/i;
 // Institution / document boilerplate that is never a person's name or a field value.
 const RE_CARD_BOILERPLATE =
   /\b(?:college|institute|institution|university|school|academy|polytechnic|campus|identity\s*card|id\s*card|student\s*(?:id|card)|library|department of|govt|government|income tax|permanent account|signature|valid|issued?|deemed|ugc|section|technology|engineering|sciences?|hosteller|day\s*scholar|scholar|principal|registrar|director|dean|holder|authori[sz]ed|emergency|contact|blood|group|male|female|return|found|please|office|phone|mobile|email|website|www)\b/i;
-const RE_NON_BIRTH_DATE = /\b(?:issued?|issue date|date of issue|enrol|enrolment|print|download|valid|expiry|generated|updated)\b|\u091c\u093e\u0930\u0940/i;
+const RE_NON_BIRTH_DATE = /\b(?:issued?|issue date|date of issue|enrol|enrolment|print|download|valid|expiry|generated|updated)\b|(?:जारी|मुद्रण|प्रिंट|डाउनलोड|नामांकन|अपडेट)/i;
 const RE_GENDER_LINE = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
-const RE_GUARDIAN_LINE = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
+const RE_GUARDIAN_LINE = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b|(?:पिता|माता|पति|संरक्षक|देखरेख)/i;
+
+function nameCharacters(text: string): string {
+  // Keep Latin letters and Devanagari letters/marks. This is intentionally
+  // narrow: QR speckle, Devanagari digits, and numeric labels must never
+  // become a name candidate.
+  return text.replace(/[^A-Za-z\u0904-\u0963\u0971-\u097F]/g, '');
+}
 
 // PAN numbers on card photos: OCR confuses O/0, I/1, Z/2, S/5, B/8, G/6 and may
 // split the 5-4-1 groups. Accept a 10-character run whose positions map to the
@@ -1118,8 +1200,9 @@ export function classifyForScenario(
   const anchorIdx = dobLineIdx >= 0 ? dobLineIdx : patternDobLineIdx >= 0 ? patternDobLineIdx : birthLabelIdx >= 0 ? birthLabelIdx : genderLineIdx;
   const nameAlreadyFound = targets.some((t) => t.fieldKey === 'name');
 
-  // Name: on Aadhaar the (Latin-script) name sits directly above the DOB line,
-  // left-aligned in the same column. Require column alignment + real letters so
+  // Name: on Aadhaar the name sits directly above the DOB line, left-aligned
+  // in the same column. It may be Hindi or Latin script. Require column
+  // alignment + real letters so
   // OCR speckle elsewhere on the card can never be mistaken for a name.
   let nameLineIdx = -1;
   if (nameAboveField && anchorIdx > 0 && !nameAlreadyFound) {
@@ -1130,11 +1213,11 @@ export function classifyForScenario(
     for (let li = anchorIdx - 1; li >= Math.max(0, anchorIdx - 4); li--) {
       const line = lines[li];
       const lineText = line.map((t) => t.text).join(' ').trim();
-      if (!lineText || RE_DEVANAGARI.test(lineText) || RE_AADHAAR_BOILERPLATE.test(lineText) || RE_CARD_BOILERPLATE.test(lineText)) continue;
+      if (!lineText || RE_AADHAAR_BOILERPLATE.test(lineText) || RE_CARD_BOILERPLATE.test(lineText)) continue;
       if (RE_GUARDIAN_LINE.test(lineText)) continue; // "S/O …" is the guardian, not the holder
-      if (/\b(?:name|d\.?o\.?b|birth|roll|course|class|branch|reg)\b/i.test(lineText) && lineText.replace(/[^A-Za-z]/g, '').length <= 12) continue; // a bare label
-      const letters = lineText.replace(/[^A-Za-z]/g, '');
-      if (letters.length < 3 || letters.length / lineText.replace(/\s/g, '').length < 0.8) continue;
+      if (/\b(?:name|d\.?o\.?b|birth|roll|course|class|branch|reg)\b|(?:नाम|जन्म|तिथि|वर्ष)/i.test(lineText) && nameCharacters(lineText).length <= 12) continue; // a bare label
+      const letters = nameCharacters(lineText);
+      if (letters.length < 3 || letters.length / lineText.replace(/\s/g, '').length < 0.7) continue;
       // Only the cluster that shares the DOB column is the name; anything to the
       // right (QR/photo speckle read as "words") is discarded from text AND box.
       const cluster = clusterByGap(line).find((c) => Math.abs(Math.min(...c.map((t) => t.x)) - dobX0) <= dobH * 3);
@@ -1144,7 +1227,7 @@ export function classifyForScenario(
       const toks = cluster.filter((t) => !claimed.has(t.id));
       if (!toks.length) continue;
       const clusterText = toks.map((t) => t.text).join(' ').trim();
-      if (clusterText.replace(/[^A-Za-z]/g, '').length < 3) continue;
+      if (nameCharacters(clusterText).length < 3) continue;
       claim(toks);
       nameLineIdx = li;
       targets.push({
@@ -1448,9 +1531,9 @@ export async function extractDocumentSpatial(
   };
 
   if (doc.mimeType === 'application/pdf' && doc.rawBytes) {
-    core = await extractPdfDocument(doc.rawBytes, canvas, onProgress, pdfPassword);
+    core = await extractPdfDocument(doc.rawBytes, canvas, onProgress, pdfPassword, scenarioId);
   } else if (doc.fileObj && doc.mimeType.startsWith('image/')) {
-    core = await extractImageDocument(doc.fileObj, canvas, onProgress);
+    core = await extractImageDocument(doc.fileObj, canvas, onProgress, scenarioId);
   }
 
   const scenario = getScenario(scenarioId ?? DEFAULT_SCENARIO_ID);
