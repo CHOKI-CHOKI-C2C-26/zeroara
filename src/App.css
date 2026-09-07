@@ -29,9 +29,9 @@
   --shadow-inset-deep: inset 10px 10px 20px rgb(163, 177, 198, 0.7), inset -10px -10px 20px rgba(255, 255, 255, 0.6);
   --shadow-inset-sm: inset 3px 3px 6px rgb(163, 177, 198, 0.6), inset -3px -3px 6px rgba(255, 255, 255, 0.5);
 
-  /* Primary Orange Accent Dual Shadows */
-  --shadow-accent: 6px 6px 14px rgba(234, 88, 12, 0.35), -6px -6px 14px rgba(255, 255, 255, 0.7);
-  --shadow-accent-hover: 8px 8px 18px rgba(234, 88, 12, 0.45), -8px -8px 18px rgba(255, 255, 255, 0.8);
+  /* Primary button dual shadows (neutral, no coloured glow) */
+  --shadow-accent: 6px 6px 14px rgb(163, 177, 198, 0.6), -6px -6px 14px rgba(255, 255, 255, 0.7);
+  --shadow-accent-hover: 8px 8px 18px rgb(163, 177, 198, 0.7), -8px -8px 18px rgba(255, 255, 255, 0.8);
   --shadow-accent-inset: inset 4px 4px 8px rgba(0, 0, 0, 0.25), inset -4px -4px 8px rgba(255, 255, 255, 0.2);
 }
 
@@ -189,7 +189,6 @@ pre {
   height: 100%;
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-light) 100%);
   border-radius: var(--radius-pill);
-  box-shadow: 0 0 10px rgba(234, 88, 12, 0.45);
   transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -211,7 +210,6 @@ pre {
   height: 8px;
   border-radius: 50%;
   background-color: var(--accent);
-  box-shadow: 0 0 8px rgba(234, 88, 12, 0.7);
 }
 
 /* Fixed viewport: the page itself never scrolls; panes scroll internally. */
@@ -777,11 +775,7 @@ pre {
 
 /* Guided walkthrough overlay (verifier demo tutorial) */
 .tour-dim { position: fixed; z-index: 1000; background: rgba(30, 41, 59, 0.42); backdrop-filter: blur(2.5px); -webkit-backdrop-filter: blur(2.5px); }
-.tour-ring { position: fixed; z-index: 1001; pointer-events: none; border: 2px solid var(--accent); border-radius: 16px; animation: tour-pulse 1.6s ease-in-out infinite; }
-@keyframes tour-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(234, 88, 12, 0.22), 0 0 30px rgba(234, 88, 12, 0.30); }
-  50% { box-shadow: 0 0 0 7px rgba(234, 88, 12, 0.14), 0 0 44px rgba(234, 88, 12, 0.45); }
-}
+.tour-ring { position: fixed; z-index: 1001; pointer-events: none; border: 2px solid var(--accent); border-radius: 16px; }
 .tour-card {
   position: fixed; z-index: 1002; box-sizing: border-box;
   background-color: var(--bg-surface); border-radius: 20px;
@@ -844,7 +838,6 @@ pre {
   max-width: 90px;
   object-fit: contain;
   display: block;
-  filter: drop-shadow(0 3px 8px rgba(234, 88, 12, 0.4));
   transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .landing-brand:hover .landing-brand-logo {
