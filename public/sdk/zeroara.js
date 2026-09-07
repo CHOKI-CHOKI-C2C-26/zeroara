@@ -1,4 +1,4 @@
-/*! Zeroara Verify SDK v1.1.0
+/*! Zeroara Verify SDK v1.2.0
  *  Drop-in "Verify with Zeroara" for any website. Zero dependencies.
  *
  *  Two transports:
@@ -24,7 +24,7 @@
 (function (global) {
   'use strict';
 
-  var VERSION = '1.1.0';
+  var VERSION = '1.2.0';
   var scriptOrigin = (function () {
     try {
       var s = document.currentScript;
@@ -426,20 +426,49 @@
     var status = document.createElement('div');
     status.style.cssText = 'font-size:13px;color:#475569;min-height:18px;';
     status.textContent = options.hint || 'Zero-knowledge · nothing leaves your device';
+    var fallbackNotice = document.createElement('div');
+    fallbackNotice.style.cssText = 'display:none;max-width:360px;padding:10px 12px;border-radius:10px;background:#fff7ed;color:#9a3412;font-size:13px;line-height:1.4;';
+    fallbackNotice.textContent = 'Zeroara Desktop has not opened yet. You can continue securely in this browser.';
+    var download = document.createElement('a');
+    download.textContent = options.downloadLabel || 'Download Zeroara Desktop';
+    download.style.cssText = 'display:none;color:#EA580C;text-decoration:underline;font-size:13px;font-weight:600;';
+    // Never put an arbitrary scheme supplied by an integrator into the page.
+    // A relative link is also useful for deployments that host their own installer page.
+    if (typeof options.desktopDownloadUrl === 'string' && options.desktopDownloadUrl) {
+      try {
+        var downloadUrl = new URL(options.desktopDownloadUrl, global.location.href);
+        if (downloadUrl.protocol === 'https:' || downloadUrl.protocol === 'http:') {
+          download.href = downloadUrl.href;
+          download.target = '_blank';
+          download.rel = 'noopener noreferrer';
+        }
+      } catch (e) { /* invalid download URL: omit the link */ }
+    }
     var link = document.createElement('button');
     link.type = 'button';
-    link.textContent = options.fallbackLabel || 'Zeroara did not open? Continue in the browser';
+    link.textContent = options.fallbackLabel || 'Continue in the browser';
     link.style.cssText = 'display:none;background:none;border:0;padding:0;color:#EA580C;text-decoration:underline;cursor:pointer;font-size:13px;text-align:left;';
-    wrap.appendChild(btn); wrap.appendChild(status); wrap.appendChild(link);
+    wrap.appendChild(btn); wrap.appendChild(status); wrap.appendChild(fallbackNotice); wrap.appendChild(download); wrap.appendChild(link);
     el.appendChild(wrap);
     var busy = false;
     btn.onclick = function () {
       if (busy) return;
-      busy = true; btn.disabled = true; link.style.display = 'none';
+      busy = true; btn.disabled = true; link.style.display = 'none'; download.style.display = 'none'; fallbackNotice.style.display = 'none';
       status.textContent = options.mode === 'desktop' ? 'Opening Zeroara…' : 'Waiting for Zeroara…';
       var opts = Object.assign({}, options, {
         onStatus: function (s) { if (s.status === 'PENDING') status.textContent = 'Waiting for you to finish in Zeroara…'; if (options.onStatus) options.onStatus(s); },
-        onFallback: function (open) { link.style.display = 'inline'; link.onclick = function () { link.style.display = 'none'; open('popup'); }; if (options.onFallback) options.onFallback(open); },
+        onFallback: function (open, session) {
+          fallbackNotice.style.display = 'block';
+          if (download.href) download.style.display = 'inline';
+          link.style.display = 'inline';
+          link.onclick = function () {
+            fallbackNotice.style.display = 'none';
+            link.style.display = 'none';
+            download.style.display = 'none';
+            open('popup');
+          };
+          if (options.onFallback) options.onFallback(open, session);
+        },
       });
       verify(opts).then(function (r) {
         status.textContent = r.ok ? '✔ Verified' : '✖ ' + ((r.checks && r.checks.reasons && r.checks.reasons[0]) || (r.reasons && r.reasons[0]) || r.status);

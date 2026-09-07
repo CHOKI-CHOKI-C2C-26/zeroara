@@ -218,4 +218,26 @@ open http://localhost:1420/demo/index.html   # playground; pick "desktop app via
 
 Without the desktop app installed the playground's desktop mode falls back to the web app after a few seconds; the API path (init → callback → status) is identical. Desktop packaging and `zeroara://` registration are described in `docs/DESKTOP.md`.
 
+### Desktop-app fallback UX
+
+`Zeroara.mount` keeps the user in control if the `zeroara://` handler does not
+open. After `fallbackAfterMs` (3.5 seconds by default), it displays a clear
+**Continue in the browser** option. An integrator that hosts a desktop installer
+can also provide a download link; it is deliberately optional so the SDK never
+shows a broken generic download URL:
+
+```js
+Zeroara.mount('#verify', {
+  mode: 'desktop',
+  api: 'https://api.your-site.example',
+  document: 'aadhaar',
+  desktopDownloadUrl: 'https://your-site.example/downloads/zeroara',
+  fallbackAfterMs: 3500,
+});
+```
+
+The link accepts only `http:` or `https:` URLs and opens in a separate tab. The
+browser continuation uses the same request, nonce, verifier API session, and
+user-consent flow as the desktop route.
+
 For the best OCR on Aadhaar photos start the local Surya sidecar (`sidecar/run.sh`); the app falls back to in-browser Tesseract otherwise.

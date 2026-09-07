@@ -14,6 +14,14 @@ export interface ZeroaraVerifyOptions {
   /** Desktop mode: what to do when the app does not open — 'auto' (overlay after fallbackAfterMs), 'iframe', 'popup' or 'none'. */
   fallback?: 'auto' | 'iframe' | 'popup' | 'none';
   fallbackAfterMs?: number;
+  /**
+   * Optional HTTPS/HTTP installer page shown by `Zeroara.mount` when the
+   * desktop deep link has not opened. Relative URLs are resolved against the
+   * relying party's page; invalid or non-web URLs are ignored.
+   */
+  desktopDownloadUrl?: string;
+  /** Label for the optional desktop installer link. */
+  downloadLabel?: string;
   /** Desktop mode: skip launching the deep link (useful in tests). */
   openApp?: boolean;
   /** Ask the user to include the redacted PDF (browser modes default to true). */
