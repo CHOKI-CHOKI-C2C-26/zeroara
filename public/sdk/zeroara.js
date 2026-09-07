@@ -422,7 +422,7 @@
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = options.label || 'Verify with Zeroara';
-    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border:0;border-radius:12px;background:#EA580C;color:#fff;font-weight:700;font-size:15px;cursor:pointer;box-shadow:0 6px 16px rgba(234,88,12,.35);';
+    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border:0;border-radius:12px;background:#EA580C;color:#fff;font-weight:700;font-size:15px;cursor:pointer;';
     var status = document.createElement('div');
     status.style.cssText = 'font-size:13px;color:#475569;min-height:18px;';
     status.textContent = options.hint || 'Zero-knowledge · nothing leaves your device';
