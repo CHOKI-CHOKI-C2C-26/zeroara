@@ -1485,7 +1485,7 @@ export function App() {
     if (activeView !== 'request' || requestScreen !== 'processing' || !doc || !verifierRequest) return;
     if (ocrRunning || isBurning || isProving || isSealing || pdfLocked || processingError) return;
     if (extractionError) {
-      setProcessingError(`The document could not be read: ${extractionError}`);
+      setProcessingError(/could not be read/i.test(extractionError) ? extractionError : `The document could not be read: ${extractionError}`);
       return;
     }
     if (!ocrTelemetry) return; // OCR still running or not started
