@@ -85,7 +85,7 @@ import {
   runEnterpriseAudit,
   dispatchVerificationResult,
 } from './layers';
-import { SCENARIOS, getScenario, isProofBacked } from './core/scenarios';
+import { SCENARIOS, getScenario, isProofBacked, guessScenario } from './core/scenarios';
 
 export interface IngestedDoc {
   fileName: string;
@@ -263,6 +263,8 @@ export function App() {
   const [includePdf, setIncludePdf] = useState(false);
   const [processingError, setProcessingError] = useState<string | null>(null);
   const [extractionError, setExtractionError] = useState<string | null>(null);
+  // Document type detected from the extracted text, when it differs from the selection.
+  const [scenarioGuess, setScenarioGuess] = useState<{ id: string; label: string; applied: boolean } | null>(null);
   const autoStepRef = useRef('');
   const [verifierRequest, setVerifierRequest] = useState<ActiveVerifierRequest | null>(null);
   const [deliveryState, setDeliveryState] = useState<'idle' | 'sent' | 'downloaded'>('idle');
@@ -331,8 +333,9 @@ export function App() {
 
   // Switch the active document scenario: reset the verifier spec to the
   // scenario's defaults and re-rank OCR targets for the new field set.
-  const applyScenario = (scenarioId: string) => {
+  const applyScenario = (scenarioId: string, tokensOverride?: ExtractedSpatialToken[]) => {
     const next = getScenario(scenarioId);
+    const toks = tokensOverride ?? extractedTokens;
     setEnterpriseSpec((prev) => ({
       ...prev,
       documentCategory: next.id,
@@ -344,12 +347,16 @@ export function App() {
       currency: next.defaults.unit,
       requiredRedactionFields: next.fields.map((f) => f.label),
     }));
-    if (extractedTokens.length > 0) {
-      const targets = classifyForScenario(extractedTokens, next, {
+    if (toks.length > 0) {
+      const targets = classifyForScenario(toks, next, {
         thresholdValue: next.defaults.thresholdValue,
       });
       setDetectedFields(targets);
       setSelectedFieldId(targets[0]?.id ?? null);
+      if (import.meta.env.DEV) {
+        const dev = ((window as unknown as { __zeroaraDev?: Record<string, unknown> }).__zeroaraDev ??= {});
+        dev.lastTargets = targets;
+      }
     }
     invalidateDownstreamState('Scenario changed — re-run redaction, proof, and seal.');
   };
@@ -400,6 +407,22 @@ export function App() {
           const dev = ((window as unknown as { __zeroaraDev?: Record<string, unknown> }).__zeroaraDev ??= {});
           dev.lastTokens = result.tokens;
           dev.lastTargets = result.targets;
+        }
+
+        // Does the text look like a different document type than the one selected?
+        // Switch when the selection found nothing real (only generic fallback
+        // fields); otherwise just suggest. Never override an external request.
+        const guess = guessScenario(result.rawText || result.tokens.map((t) => t.text).join(' '));
+        const nothingReal = result.targets.length === 0 || result.targets.every((t) => t.id.startsWith('field_generic_'));
+        if (guess && guess.id !== enterpriseSpec.documentCategory && !verifierRequestRef.current) {
+          if (nothingReal) {
+            applyScenario(guess.id, result.tokens);
+            setScenarioGuess({ id: guess.id, label: guess.label, applied: true });
+          } else {
+            setScenarioGuess({ id: guess.id, label: guess.label, applied: false });
+          }
+        } else {
+          setScenarioGuess(null);
         }
         if (result.targets.length > 0) {
           setSelectedFieldId(result.targets[0].id);
@@ -1042,6 +1065,7 @@ export function App() {
 
   // Full workspace reset: document, OCR output, rasters, and every downstream artefact.
   const clearDocument = () => {
+    setScenarioGuess(null);
     setDoc(null);
     setDetectedFields([]);
     setExtractedTokens([]);
@@ -1937,6 +1961,39 @@ export function App() {
                             </div>
                           )}
                         </div>
+                        {scenarioGuess && !ocrRunning && doc && (
+                          <div className="neu-verified-well" style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.76rem', color: 'var(--fg-primary)' }}>
+                              {scenarioGuess.applied ? (
+                                <>
+                                  Switched to <strong>{scenarioGuess.label}</strong> — detected from the document (the selected type found nothing).
+                                </>
+                              ) : (
+                                <>
+                                  This looks like a <strong>{scenarioGuess.label}</strong>, not {scenario.label}.
+                                </>
+                              )}
+                            </span>
+                            {!scenarioGuess.applied && (
+                              <button
+                                type="button"
+                                className="neu-btn-secondary"
+                                style={{ padding: '6px 10px', fontSize: '0.72rem' }}
+                                onClick={() => {
+                                  applyScenario(scenarioGuess.id);
+                                  setScenarioGuess({ ...scenarioGuess, applied: true });
+                                }}
+                              >
+                                Switch to {scenarioGuess.label}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {!ocrRunning && doc && !pdfLocked && detectedFields.length > 0 && detectedFields.every((f) => f.id.startsWith('field_generic_')) && (
+                          <span style={{ fontSize: '0.76rem', color: 'var(--accent-rose)' }}>
+                            Nothing matched {scenario.label}. Choose the right document type in Stage 1, or mark targets from the token index below.
+                          </span>
+                        )}
                         {!ocrRunning && doc && !pdfLocked && detectedFields.length === 0 && (
                           <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>Nothing was recognised. Try a sharper, well-lit photo of the front of the card, or open the token index below to mark targets by hand.</span>
                         )}

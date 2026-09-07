@@ -855,7 +855,8 @@ const RE_BIRTH_LINE = /\b(?:dob|d\.o\.b|date of birth|year of birth|yob|birth)\b
 const RE_DEVANAGARI = /[\u0900-\u097F]/;
 const RE_AADHAAR_BOILERPLATE = /government of india|unique identification|aadhaar|\bindia\b|proof of identity|citizenship|authority|\bmera\b/i;
 // Institution / document boilerplate that is never a person's name or a field value.
-const RE_CARD_BOILERPLATE = /\b(?:college|institute|institution|university|school|academy|polytechnic|campus|identity\s*card|id\s*card|student\s*(?:id|card)|library|department of|govt|government|income tax|permanent account|signature|valid|issued?)\b/i;
+const RE_CARD_BOILERPLATE =
+  /\b(?:college|institute|institution|university|school|academy|polytechnic|campus|identity\s*card|id\s*card|student\s*(?:id|card)|library|department of|govt|government|income tax|permanent account|signature|valid|issued?|deemed|ugc|section|technology|engineering|sciences?|hosteller|day\s*scholar|scholar|principal|registrar|director|dean|holder|authori[sz]ed|emergency|contact|blood|group|male|female|return|found|please|office|phone|mobile|email|website|www)\b/i;
 const RE_NON_BIRTH_DATE = /\b(?:issued?|issue date|date of issue|enrol|enrolment|print|download|valid|expiry|generated|updated)\b|\u091c\u093e\u0930\u0940/i;
 const RE_GENDER_LINE = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 const RE_GUARDIAN_LINE = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
@@ -965,8 +966,9 @@ export function classifyForScenario(
   const nameAboveField = fields.find((f) => f.detect.kind === 'name_above_dob');
   const photoField = fields.find((f) => f.detect.kind === 'aadhaar_photo_layout');
   const cardPhotoField = fields.find((f) => f.detect.kind === 'card_photo_layout');
+  const prominentNameField = fields.find((f) => f.detect.kind === 'name_prominent');
   const otherFields = fields.filter(
-    (f) => !['currency', 'age_from_dob', 'name_above_dob', 'aadhaar_photo_layout', 'card_photo_layout'].includes(f.detect.kind)
+    (f) => !['currency', 'age_from_dob', 'name_above_dob', 'aadhaar_photo_layout', 'card_photo_layout', 'name_prominent'].includes(f.detect.kind)
   );
   let patternDobLineIdx = -1;
 
@@ -982,7 +984,8 @@ export function classifyForScenario(
           // "VALID UPTO" / "ISSUED" on this line, or as a label on the line above (card layouts).
           if (RE_NON_BIRTH_DATE.test(here) || (RE_NON_BIRTH_DATE.test(above) && !RE_BIRTH_LINE.test(above) && !RE_BIRTH_LINE.test(here))) continue;
         }
-        const exact = matchInLine(line, field.detect.re);
+        const validate = field.detect.validate;
+        const exact = matchInLine(line, field.detect.re).filter((m) => !validate || validate(m.text));
         const matches = field.key === 'pan' && exact.length === 0 ? matchPanTolerant(line) : exact;
         for (const mt of matches) {
           if (isClaimed(mt.tokens)) continue;
@@ -1009,7 +1012,9 @@ export function classifyForScenario(
         // ("Name Lo"); the real value is on the line below on card layouts.
         // Short or low-confidence same-line "values" are speckle next to the label
         // ("Name Lo", "NAME Coe"); on card layouts the real value is the line below.
-        const weak = !!mv && (mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 3 || tokenConfidence(mv.tokens) < 45);
+        // Blood groups ("B+", "AB-") are legitimately short.
+        const RE_BLOOD_GROUP = /^(?:A|B|AB|O)\s*[+-]?\s*(?:ve)?$/i;
+        const weak = !!mv && !(field.key === 'blood' && RE_BLOOD_GROUP.test(mv.text)) && (mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 3 || tokenConfidence(mv.tokens) < 45);
         if (!mv || weak) mv = valueBelowLabel(lines, li, field.detect.re, claimed) ?? (mv && !weak ? mv : mv && mv.text.replace(/[^A-Za-z0-9]/g, '').length > 3 ? mv : null);
         // A person-name field never takes institution/document boilerplate as its value.
         if (mv && ['name', 'father', 'guardian'].includes(field.key) && RE_CARD_BOILERPLATE.test(mv.text)) mv = null;
@@ -1170,6 +1175,43 @@ export function classifyForScenario(
     }
   }
 
+  // Name printed with no label at all (most student IDs): the most prominent
+  // Title-Case / CAPS line of 2-4 words that is not institution boilerplate.
+  if (prominentNameField && !targets.some((t) => t.fieldKey === 'name')) {
+    let best: { toks: ExtractedSpatialToken[]; score: number } | null = null;
+    for (const line of lines) {
+      const toks = line.filter((t) => !claimed.has(t.id));
+      const text = toks.map((t) => t.text).join(' ').trim();
+      if (!text || /\d/.test(text) || RE_DEVANAGARI.test(text)) continue;
+      const words = text.split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
+      const letters = text.replace(/[^A-Za-z]/g, '');
+      if (words.length < 2 || words.length > 4 || letters.length < 5) continue;
+      if (letters.length / text.replace(/\s/g, '').length < 0.85) continue; // mostly letters
+      if (RE_CARD_BOILERPLATE.test(text) || RE_AADHAAR_BOILERPLATE.test(text) || RE_GUARDIAN_LINE.test(text) || RE_LABEL_WORDS.test(text)) continue;
+      const titleCase = words.every((w) => /^[A-Z][a-z'.-]+$/.test(w));
+      const allCaps = words.every((w) => /^[A-Z][A-Z'.-]+$/.test(w));
+      if (!titleCase && !allCaps) continue;
+      const h = Math.max(...toks.map((t) => t.height));
+      const score = h * (titleCase ? 1.15 : 1);
+      if (!best || score > best.score) best = { toks, score };
+    }
+    if (best) {
+      claim(best.toks);
+      targets.push({
+        id: `field_${prominentNameField.key}_${counter++}`,
+        label: prominentNameField.label,
+        classification: prominentNameField.classification,
+        extractedValue: best.toks.map((t) => t.text).join(' ').trim(),
+        ...unionBox(best.toks),
+        page: best.toks[0].page,
+        action: prominentNameField.action,
+        source: 'OCR_AUTO',
+        confidence: tokenConfidence(best.toks),
+        fieldKey: prominentNameField.key,
+      });
+    }
+  }
+
   // Generic ID cards: the portrait sits in the empty column left of the text
   // block. Only inferred when the text block starts well inside the page.
   if (cardPhotoField && !targets.some((t) => t.fieldKey === 'photo')) {
@@ -1205,6 +1247,49 @@ export function classifyForScenario(
             fieldKey: cardPhotoField.key,
           });
         }
+      }
+    }
+  }
+  // Centred layouts (photo between the header and the name): the largest
+  // text-free vertical gap on the first page, at least four lines tall.
+  if (cardPhotoField && !targets.some((t) => t.fieldKey === 'photo')) {
+    const firstPage = Math.min(...tokens.map((t) => t.page));
+    const pageLines = lines.filter((l) => l[0].page === firstPage);
+    if (pageLines.length >= 3) {
+      const heights = pageLines.map((l) => Math.max(...l.map((t) => t.height))).sort((a, b) => a - b);
+      const medianH = heights[Math.floor(heights.length / 2)];
+      const pageTokens = tokens.filter((t) => t.page === firstPage);
+      const minX = Math.min(...pageTokens.map((t) => t.x));
+      const maxX = Math.max(...pageTokens.map((t) => t.x + t.width));
+      let bestGap = 0;
+      let gapTop = 0;
+      for (let i = 0; i + 1 < pageLines.length; i++) {
+        const y1 = Math.max(...pageLines[i].map((t) => t.y + t.height));
+        const y0 = Math.min(...pageLines[i + 1].map((t) => t.y));
+        if (y0 - y1 > bestGap) {
+          bestGap = y0 - y1;
+          gapTop = y1;
+        }
+      }
+      if (bestGap >= medianH * 4) {
+        // The portrait fills most of the gap and sits nearer the name below it.
+        const height = Math.round(bestGap * 0.8);
+        const width = Math.round(Math.min(height * 0.85, (maxX - minX) * 0.75));
+        const cx = (minX + maxX) / 2;
+        targets.push({
+          id: `field_${cardPhotoField.key}_${counter++}`,
+          label: cardPhotoField.label,
+          classification: cardPhotoField.classification,
+          extractedValue: '[image region · inferred from card layout]',
+          x: Math.max(0, Math.round(cx - width / 2)),
+          y: Math.round(gapTop + bestGap * 0.15),
+          width,
+          height,
+          page: firstPage,
+          action: cardPhotoField.action,
+          source: 'OCR_AUTO',
+          fieldKey: cardPhotoField.key,
+        });
       }
     }
   }

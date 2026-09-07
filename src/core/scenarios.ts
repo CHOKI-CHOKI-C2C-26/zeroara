@@ -26,7 +26,8 @@ export type ScenarioProofMode = 'PROOF_BACKED' | 'SEAL_ONLY';
 
 export type FieldDetector =
   // Regex matched against reconstructed line text; the matched substring is the value.
-  | { kind: 'pattern'; re: RegExp }
+  // `validate` can reject matches (e.g. a code must contain both letters and digits).
+  | { kind: 'pattern'; re: RegExp; validate?: (text: string) => boolean }
   // Label keyword on a line; the tokens after the label on that line are the value.
   | { kind: 'label'; re: RegExp }
   // Currency/number amounts (handled specially so a witness can be chosen).
@@ -39,8 +40,11 @@ export type FieldDetector =
   | { kind: 'name_above_dob' }
   // Aadhaar portrait region inferred from the demographic-column geometry.
   | { kind: 'aadhaar_photo_layout' }
-  // Generic ID-card portrait: the empty column left of the text block.
-  | { kind: 'card_photo_layout' };
+  // Generic ID-card portrait: the empty column left of the text block, or the
+  // large text-free gap between the header and the name on centred layouts.
+  | { kind: 'card_photo_layout' }
+  // Name printed without any label: the most prominent Title-Case / CAPS line that is not boilerplate.
+  | { kind: 'name_prominent' };
 
 export interface ScenarioField {
   key: string;
@@ -94,6 +98,16 @@ export const RE_EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/;
 export const RE_PHONE_IN = /\b(?:\+91[\-\s]?)?[6-9]\d{9}\b/;         // Indian mobile
 export const RE_SSN = /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/;               // US SSN (legacy)
 export const RE_TAN = /\b[A-Z]{4}\d{5}[A-Z]\b/;                        // employer TAN: ABCD12345E
+// Student registration / roll codes printed without a label: 25BYB0259, 21CS1042, 2021CSE042
+export const RE_STUDENT_CODE = /\b[A-Z0-9]{6,12}\b/;
+export const isStudentCode = (text: string): boolean => {
+  const t = text.replace(/\s+/g, '');
+  const digits = (t.match(/\d/g) ?? []).length;
+  const letters = (t.match(/[A-Z]/g) ?? []).length;
+  return digits >= 2 && letters >= 2 && !/^(?:19|20)\d{2}/.test(t) && !/^[A-Z]{5}\d{4}[A-Z]$/.test(t);
+};
+const L_BLOOD = /\bblood\s*(?:group|grp)?\b/i;
+const L_PARENT = /\b(?:father|mother|parent|guardian)(?:'s)?\s*(?:name)?\b/i;
 export const RE_GENDER = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 export const RE_CURRENCY =
   /(?:INR|Rs\.?|₹|USD|US\$|\$|€|£)\s?\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?:\s?(?:INR|USD|EUR|GBP))?|\b\d{4,9}\.\d{2}\b(?:\s?(?:INR|USD|EUR|GBP))?/;
@@ -138,6 +152,10 @@ const dobField = (): ScenarioField => ({
 const nameNearDobField = (): ScenarioField => ({
   key: 'name', label: 'Full Name', classification: 'Personal Name (PII)',
   action: 'DIRECT_BURN', detect: { kind: 'name_above_dob' }, priority: 31,
+});
+const prominentNameField = (label = 'Full Name'): ScenarioField => ({
+  key: 'name', label, classification: 'Personal Name (PII)',
+  action: 'DIRECT_BURN', detect: { kind: 'name_prominent' }, priority: 32,
 });
 const cardPhotoField = (): ScenarioField => ({
   key: 'photo', label: 'Photo (face)', classification: 'Portrait Region (layout-inferred)',
@@ -203,6 +221,13 @@ export const SCENARIOS: DocumentScenario[] = [
     fields: [
       { key: 'name', label: 'Student Name', classification: 'Personal Name (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_NAME }, priority: 30 },
       { ...nameNearDobField(), label: 'Student Name' },
+      prominentNameField('Student Name'),
+      { key: 'reg_code', label: 'Registration / Roll Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_STUDENT_CODE, validate: isStudentCode }, priority: 22 },
+      { key: 'blood', label: 'Blood Group', classification: 'Medical Attribute (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_BLOOD }, priority: 34 },
+      { key: 'guardian', label: 'Parent / Guardian', classification: 'Relation Name (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_PARENT }, priority: 26 },
+      addressField(),
+      phoneField(),
+      emailField(),
       { key: 'roll', label: 'Roll Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_ROLL }, priority: 20 },
       { key: 'registration', label: 'Registration Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_REG }, priority: 21 },
       { key: 'department', label: 'Department / Branch', classification: 'Institutional Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_DEPT }, priority: 32 },
@@ -289,6 +314,7 @@ export const SCENARIOS: DocumentScenario[] = [
       { key: 'pan', label: 'PAN', classification: 'Permanent Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_PAN }, priority: 6 },
       nameField(),
       nameNearDobField(),
+      prominentNameField(),
       dobField(),
       addressField(),
       phoneField(),
@@ -315,6 +341,39 @@ export const SCENARIOS: DocumentScenario[] = [
 ];
 
 export const DEFAULT_SCENARIO_ID = 'generic_id';
+
+// --- Document-type detection from the extracted text --------------------------
+// Keyword evidence per scenario; used to switch or suggest the right document
+// type when the one selected in Stage 1 does not fit the upload.
+const GUESS_RULES: { id: string; re: RegExp; weight: number }[] = [
+  { id: 'aadhaar', re: /aadhaar|uidai|unique identification|\u0906\u0927\u093e\u0930|\u092d\u093e\u0930\u0924 \u0938\u0930\u0915\u093e\u0930|mera aadhaar/i, weight: 4 },
+  { id: 'aadhaar', re: /government of india/i, weight: 2 },
+  { id: 'pan', re: /income tax department|permanent account number/i, weight: 4 },
+  { id: 'pan', re: /\bpan\b/i, weight: 1 },
+  { id: 'college_id', re: /\b(?:institute|university|college|campus|polytechnic|school|academy)\b/i, weight: 3 },
+  { id: 'college_id', re: /\b(?:student|hosteller|day scholar|scholar|roll\s*no|reg(?:istration)?\.?\s*no|semester|batch|course|branch)\b/i, weight: 2 },
+  { id: 'bank_statement', re: /account statement|statement of account|statement period|closing balance|opening balance|\bifsc\b/i, weight: 4 },
+  { id: 'bank_statement', re: /\b(?:debit|credit|withdrawal|deposit|transaction)\b/i, weight: 1 },
+  { id: 'salary_slip', re: /pay\s*slip|salary slip|salary statement|net pay|gross earnings|total deductions|\buan\b|employee id/i, weight: 4 },
+  { id: 'salary_slip', re: /\b(?:basic pay|hra|allowance|provident fund)\b/i, weight: 1 },
+  { id: 'tax_form', re: /form\s*-?\s*16|assessment year|tax deducted at source|\btan\b|income tax return|form 26as/i, weight: 4 },
+  { id: 'income_accredited', re: /accredited investor|annual income|net income|sec rule/i, weight: 4 },
+  { id: 'generic_financial', re: /\b(?:invoice|receipt|amount payable|grand total|bill to|billed to)\b/i, weight: 3 },
+];
+
+export function guessScenario(text: string): { id: string; label: string; score: number } | null {
+  const scores = new Map<string, number>();
+  for (const rule of GUESS_RULES) if (rule.re.test(text)) scores.set(rule.id, (scores.get(rule.id) ?? 0) + rule.weight);
+  if (RE_AADHAAR.test(text)) scores.set('aadhaar', (scores.get('aadhaar') ?? 0) + 3);
+  if (RE_PAN.test(text) && /permanent account|income tax/i.test(text)) scores.set('pan', (scores.get('pan') ?? 0) + 2);
+  const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+  if (!ranked.length) return null;
+  const [id, score] = ranked[0];
+  const runnerUp = ranked[1]?.[1] ?? 0;
+  if (score < 4 || score - runnerUp < 2) return null;
+  const scenario = SCENARIOS.find((s) => s.id === id);
+  return scenario ? { id, label: scenario.label, score } : null;
+}
 
 export function getScenario(id: string): DocumentScenario {
   return SCENARIOS.find((s) => s.id === id) ?? SCENARIOS.find((s) => s.id === DEFAULT_SCENARIO_ID)!;
