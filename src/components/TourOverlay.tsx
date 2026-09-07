@@ -15,6 +15,8 @@ export interface TourSnapshot {
   hasRequest: boolean;
   hasDoc: boolean;
   ocrRunning: boolean;
+  /** Local OCR/extraction failed for the loaded document. */
+  ocrFailed: boolean;
   targets: number;
   hasRedaction: boolean;
   proofVerified: boolean;
@@ -35,13 +37,16 @@ export interface TourStep {
   text: string;
   /** When present, the step completes on its own once this is true. */
   done?: (s: TourSnapshot, dom: DomProbe) => boolean;
+  /** When present and true, the step cannot complete; `failText` replaces the text. */
+  failed?: (s: TourSnapshot) => boolean;
+  failText?: string;
 }
 
 export const TOUR_STEPS: TourStep[] = [
   { id: 'cta', target: 'demo-cta', view: 'demo', kind: 'do', text: 'Click “Verify with Zeroara” — the site wants proof you are 18+ without ever seeing your ID.', done: (s) => s.hasRequest },
   { id: 'request', target: 'request-badge', view: 'workspace', kind: 'see', text: 'Zeroara opened with the site’s request: Age ≥ 18, Aadhaar card, and a one-time challenge nonce.' },
   { id: 'load', target: 'dropzone', view: 'workspace', stage: 1, kind: 'do', text: 'Load the specimen Aadhaar (or drop the front of your own card) — it is read on this device only.', done: (s) => s.hasDoc },
-  { id: 'ocr', target: 'step-2', view: 'workspace', kind: 'see', text: 'Zeroara is reading the card locally — no upload, no server, just OCR inside your browser.', done: (s) => s.hasDoc && !s.ocrRunning && s.targets > 0 },
+  { id: 'ocr', target: 'step-2', view: 'workspace', kind: 'see', text: 'Zeroara is reading the card locally — no upload, no server, just OCR inside your browser.', done: (s) => s.hasDoc && !s.ocrRunning && s.targets > 0, failed: (s) => s.hasDoc && !s.ocrRunning && s.ocrFailed, failText: 'Zeroara could not read this document. Press “Clear document” at the top and load the specimen Aadhaar again.' },
   { id: 'review', target: 'primary-action', view: 'workspace', stage: 1, kind: 'do', text: 'Click “Review detected targets” to see what Zeroara found on the card.', done: (s) => s.stage >= 2 },
   { id: 'boxes', target: 'canvas', view: 'workspace', stage: 2, kind: 'see', text: 'The boxes mark the exact pixels that will be blacked out: number, date of birth, name, gender, photo.' },
   { id: 'targets', target: 'targets', view: 'workspace', stage: 2, kind: 'see', text: 'Each target is classified: the date of birth is the private witness for the age proof, the rest is burned.' },
@@ -75,6 +80,7 @@ interface Effective {
   kind: 'do' | 'see';
   text: string;
   interstitial: boolean;
+  failed?: boolean;
 }
 
 /** Steer the user back when they are on a different view or stage. */
@@ -86,6 +92,9 @@ function resolveEffective(step: TourStep, s: TourSnapshot): Effective {
   }
   if (step.view === 'workspace' && step.stage !== undefined && s.stage !== step.stage) {
     return { target: `step-${step.stage}`, kind: 'do', text: `Click step 0${step.stage} in the strip to return to this point.`, interstitial: true };
+  }
+  if (step.failed && step.failText && step.failed(s)) {
+    return { target: step.target, kind: step.kind, text: step.failText, interstitial: false, failed: true };
   }
   return { target: step.target, kind: step.kind, text: step.text, interstitial: false };
 }
@@ -286,8 +295,8 @@ export function TourOverlay({
             )
           ) : (
             <span className="tour-waiting">
-              {eff.kind === 'see' ? <Loader2 size={13} className="spin" /> : <span className="tour-dot" />}
-              {eff.kind === 'see' ? 'Working…' : 'Waiting for you…'}
+              {eff.failed ? <span className="tour-dot" /> : eff.kind === 'see' ? <Loader2 size={13} className="spin" /> : <span className="tour-dot" />}
+              {eff.failed ? 'Could not continue' : eff.kind === 'see' ? 'Working…' : 'Waiting for you…'}
             </span>
           )}
           {!showNext && !isLast && (

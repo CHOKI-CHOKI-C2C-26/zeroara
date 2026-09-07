@@ -1405,7 +1405,7 @@ export function App() {
       n: 2,
       title: 'Detect',
       state: ocrRunning ? 'active' : detectedFields.length > 0 ? 'done' : stage === 2 ? 'active' : 'pending',
-      detail: ocrRunning ? 'Reading locally…' : detectedFields.length > 0 ? `${detectedFields.length} targets · ${burnableCount} to burn` : doc ? 'No targets yet' : 'Automatic after ingest',
+      detail: ocrRunning ? 'Reading locally…' : detectedFields.length > 0 ? `${detectedFields.length} targets · ${burnableCount} to burn` : extractionError ? 'Could not read the document' : doc ? 'No targets yet' : 'Automatic after ingest',
     },
     {
       n: 3,
@@ -1536,6 +1536,7 @@ export function App() {
     hasRequest: !!verifierRequest,
     hasDoc: !!doc,
     ocrRunning,
+    ocrFailed: !!extractionError,
     targets: detectedFields.length,
     hasRedaction: !!redactionResult,
     proofVerified: !!(proofResult && proofVerified),

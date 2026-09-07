@@ -124,43 +124,45 @@ async function runTesseract(
       },
     });
 
-  let languages = profile.languages;
-  let worker: any;
-  try {
-    worker = await createLocalWorker(languages);
-  } catch (error) {
-    // An older cached deployment may be missing the optional Hindi pack. Do
-    // not fail the document pipeline: retain the previous English fallback.
-    if (languages === 'eng') throw error;
-    console.warn(`Tesseract language pack "${languages}" unavailable; using English only.`, error);
-    languages = 'eng';
-    worker = await createLocalWorker(languages);
-  }
+  const recognizeWith = async (languages: string) => {
+    const worker: any = await createLocalWorker(languages);
+    try {
+      try {
+        await worker.setParameters({
+          preserve_interword_spaces: '1',
+          user_defined_dpi: '300',
+          tessedit_pageseg_mode: String(profile.pageSegMode ?? 3),
+        });
+      } catch (error) {
+        // Parameter tuning is best-effort. Recognition remains available on an
+        // older runtime even if it rejects a newer page-segmentation setting.
+        console.warn('Tesseract parameter tuning was unavailable; using engine defaults.', error);
+      }
+      // tesseract.js v6+: word/line geometry is only returned when the `blocks`
+      // output is requested explicitly (it is off by default).
+      const ret: any = await worker.recognize(image, {}, { text: true, blocks: true });
+      return {
+        words: collectTesseractWords(ret.data),
+        rawText: normalizeOcrText(ret.data?.text),
+        languages,
+      };
+    } finally {
+      // A failed recognition used to leave the Wasm worker alive. Always release
+      // it before the user retries another photograph.
+      await worker.terminate().catch(() => undefined);
+    }
+  };
 
   try {
-    try {
-      await worker.setParameters({
-        preserve_interword_spaces: '1',
-        user_defined_dpi: '300',
-        tessedit_pageseg_mode: String(profile.pageSegMode ?? 3),
-      });
-    } catch (error) {
-      // Parameter tuning is best-effort. Recognition remains available on an
-      // older runtime even if it rejects a newer page-segmentation setting.
-      console.warn('Tesseract parameter tuning was unavailable; using engine defaults.', error);
-    }
-    // tesseract.js v6+: word/line geometry is only returned when the `blocks`
-    // output is requested explicitly (it is off by default).
-    const ret: any = await worker.recognize(image, {}, { text: true, blocks: true });
-    return {
-      words: collectTesseractWords(ret.data),
-      rawText: normalizeOcrText(ret.data?.text),
-      languages,
-    };
-  } finally {
-    // A failed recognition used to leave the Wasm worker alive. Always release
-    // it before the user retries another photograph.
-    await worker.terminate();
+    return await recognizeWith(profile.languages);
+  } catch (error) {
+    // The optional extra language pack may be missing from an older cached
+    // deployment, or incompatible with the Wasm core (float "tessdata_best"
+    // models abort inside the integer-only LSTM build). Either way, do not
+    // fail the document pipeline: retain the established English path.
+    if (profile.languages === 'eng') throw error;
+    console.warn(`Tesseract language pack "${profile.languages}" unusable; using English only.`, error);
+    return recognizeWith('eng');
   }
 }
 
