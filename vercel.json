@@ -2,5 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "outputDirectory": "dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    { "source": "/((?!api/|sdk/|demo/|assets/|zk/|tesseract/|opencv/|standard_fonts/).*)", "destination": "/index.html" }
+  ]
 }

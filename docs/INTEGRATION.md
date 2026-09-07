@@ -142,7 +142,7 @@ Website ◀──SSE / polling GET /api/verify/status/:id──
 </script>
 ```
 
-`Zeroara.verify({ mode: 'desktop', api, … })` does the same without the button: it calls `init`, opens `zeroara://…`, watches the session (server-sent events, polling fallback) and resolves when the API records a final status. If the app does not open, the web app opens as an overlay after `fallbackAfterMs` (or your `onFallback` callback decides). The result's `transport` says which path was used.
+`Zeroara.verify({ mode: 'desktop', api, … })` does the same without the button: it calls `init`, opens `zeroara://…`, watches the session (server-sent events, polling fallback) and resolves when the API records a final status. If the app does not open, the web app opens as an overlay after `fallbackAfterMs` (or your `onFallback` callback decides). The result's `transport` says which path was used. `api` defaults to the Zeroara origin: the Vercel deployment of this repo serves the verifier API at `https://zeroara.vercel.app/api/verify/*` (see `server/README.md` for the one-time Upstash Redis setup).
 
 ### 5.2 The verifier API
 

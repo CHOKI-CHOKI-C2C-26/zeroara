@@ -270,9 +270,8 @@
   /* ------------------------------------------------------------------ */
 
   function apiBase(options) {
-    var api = (options.api || '').replace(/\/+$/, '');
-    if (!api) throw fail('Zeroara.verify: options.api (your verifier API base URL) is required for mode "desktop"', 'BAD_REQUEST');
-    return api;
+    // Default: the Zeroara deployment this script came from hosts /api/verify/*.
+    return (options.api || options.origin || scriptOrigin).replace(/\/+$/, '');
   }
 
   function desktopInit(api, options) {

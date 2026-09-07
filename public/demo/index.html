@@ -97,7 +97,7 @@
         </select>
       </label>
       <label id="api-row" hidden>Verifier API base URL (desktop mode)
-        <input id="api" value="http://localhost:8787" />
+        <input id="api" />
       </label>
 
       <button class="primary" id="verify">Verify with Zeroara</button>
@@ -184,6 +184,8 @@
       });
       ['document', 'requester', 'field', 'value', 'unit', 'purpose', 'mode', 'api'].forEach(function (id) { $(id).addEventListener('input', renderSnippet); $(id).addEventListener('change', renderSnippet); });
       $('sdkurl').textContent = Zeroara.origin + '/sdk/zeroara.js';
+      // Dev servers keep the API on :8787; a deployment serves it from its own origin (api/verify/*).
+      $('api').value = /^https?:\/\/(localhost|127\.0\.0\.1):1420$/.test(Zeroara.origin) ? 'http://localhost:8787' : Zeroara.origin;
       renderSnippet();
 
       $('verify').addEventListener('click', async function () {

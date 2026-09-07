@@ -9,7 +9,7 @@ export interface ZeroaraVerifyOptions {
   purpose?: string;
   /** 'auto' (popup, falling back to an overlay iframe), 'popup', 'iframe', or 'desktop' (verifier API + zeroara:// deep link). */
   mode?: 'auto' | 'popup' | 'iframe' | 'desktop';
-  /** Desktop mode: base URL of your verifier API (see server/verifier-api.mjs). */
+  /** Desktop mode: base URL of the verifier API. Defaults to the Zeroara origin, which hosts /api/verify/* on Vercel. */
   api?: string;
   /** Desktop mode: what to do when the app does not open — 'auto' (overlay after fallbackAfterMs), 'iframe', 'popup' or 'none'. */
   fallback?: 'auto' | 'iframe' | 'popup' | 'none';
