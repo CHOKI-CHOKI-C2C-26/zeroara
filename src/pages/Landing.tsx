@@ -253,10 +253,24 @@ report.overallValid;                                 // true when nothing was al
         <div className={`landing-shell ${intro === 'done' ? 'landing-enter' : 'landing-hidden'}`}>
           {/* Top bar */}
           <header className="landing-top">
-            <div className="landing-brand">
-              <img src="/logo.png" alt="" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                const vp = document.querySelector('.landing-viewport');
+                if (vp) {
+                  vp.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+                }
+                navigate('/');
+              }}
+              className="landing-brand"
+              aria-label="Zeroara home"
+            >
+              <img src="/logo.png" alt="Zeroara Logo" className="landing-brand-logo" />
               <span>ZEROARA</span>
-            </div>
+            </a>
             <nav className="landing-nav">
               <a href="#how">How it works</a>
               <a href="#integrate">Integrate</a>

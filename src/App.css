@@ -834,7 +834,24 @@ pre {
 .landing-viewport { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; background-color: var(--bg-surface); }
 .landing-shell { min-height: 100%; max-width: 1080px; margin: 0 auto; padding: 20px 28px 48px; display: flex; flex-direction: column; gap: 56px; }
 .landing-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.landing-brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display); font-weight: 800; font-size: 1.15rem; letter-spacing: -0.02em; color: var(--fg-primary); }
+.landing-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 1.85rem;
+  letter-spacing: -0.03em;
+  color: var(--fg-primary);
+  text-decoration: none;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.landing-brand:hover {
+  opacity: 0.88;
+  transform: translateY(-1px);
+}
 .landing-brand-logo {
   height: 52px;
   width: auto;
