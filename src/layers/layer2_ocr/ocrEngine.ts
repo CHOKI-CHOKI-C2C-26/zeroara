@@ -801,8 +801,9 @@ function matchLabelValue(line: ExtractedSpatialToken[], labelRe: RegExp): LineMa
   if (!valueToks.length) return null;
   const text = valueToks.map((t) => t.text).join(' ').replace(/^[:\-–—\s.]+/, '').trim();
   if (!text) return null;
-  // "Father's Name" leaves just "Name": that is the rest of the label, not a value.
-  if (/^(?:name|no\.?|number|id|code|date|of)$/i.test(text)) return null;
+  // "Father's Name" leaves just "Name", "ROLL NO VALID UPTO" leaves "VALID UPTO":
+  // label words in the next column are not values.
+  if (RE_LABEL_WORDS.test(text)) return null;
   return { text, tokens: valueToks };
 }
 
@@ -853,6 +854,8 @@ function clusterByGap(line: ExtractedSpatialToken[]): ExtractedSpatialToken[][] 
 const RE_BIRTH_LINE = /\b(?:dob|d\.o\.b|date of birth|year of birth|yob|birth)\b/i;
 const RE_DEVANAGARI = /[\u0900-\u097F]/;
 const RE_AADHAAR_BOILERPLATE = /government of india|unique identification|aadhaar|\bindia\b|proof of identity|citizenship|authority|\bmera\b/i;
+// Institution / document boilerplate that is never a person's name or a field value.
+const RE_CARD_BOILERPLATE = /\b(?:college|institute|institution|university|school|academy|polytechnic|campus|identity\s*card|id\s*card|student\s*(?:id|card)|library|department of|govt|government|income tax|permanent account|signature|valid|issued?)\b/i;
 const RE_NON_BIRTH_DATE = /\b(?:issued?|issue date|date of issue|enrol|enrolment|print|download|valid|expiry|generated|updated)\b|\u091c\u093e\u0930\u0940/i;
 const RE_GENDER_LINE = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 const RE_GUARDIAN_LINE = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
@@ -885,6 +888,9 @@ function matchPanTolerant(line: ExtractedSpatialToken[]): LineMatch[] {
   return matchInLine(line, RE_PAN_LOOSE).filter((m) => panLike(m.text));
 }
 
+const RE_LABEL_WORDS =
+  /^(?:name|no\.?|number|id|code|date|of|valid(?:\s*(?:upto|up\s*to|till|thru|through))?|issued?(?:\s*on)?|expiry|exp\.?|dob|d\.?o\.?b\.?|date\s*of\s*birth|roll\s*no\.?|course|class|branch|dept\.?|reg\.?\s*no\.?|signature)$/i;
+
 // Card layouts print the label on one line and the value on the next
 // ("Name" / "SPECIMEN PERSON"). When a line is only the label, take the
 // column-aligned cluster of the next line on the same page as the value.
@@ -895,8 +901,15 @@ function valueBelowLabel(
   claimed: Set<string>
 ): LineMatch | null {
   const line = lines[li];
-  const next = lines[li + 1];
-  if (!next || next[0].page !== line[0].page) return null;
+  // The value line is the next line with real content; OCR punctuation specks
+  // ("..", "=") often form their own tiny line between a label and its value.
+  let next: ExtractedSpatialToken[] | undefined;
+  for (let j = li + 1; j < Math.min(lines.length, li + 4); j++) {
+    const cand = lines[j];
+    if (cand[0].page !== line[0].page) break;
+    if (cand.some((t) => /[A-Za-z0-9]/.test(t.text))) { next = cand; break; }
+  }
+  if (!next) return null;
   const lineText = line.map((t) => t.text).join(' ');
   const re = new RegExp(labelRe.source, labelRe.flags.replace('g', ''));
   const m = re.exec(lineText);
@@ -904,16 +917,28 @@ function valueBelowLabel(
   const restRaw = lineText.slice(m.index + m[0].length);
   const rest = restRaw.replace(/[^A-Za-z0-9]/g, '');
   const before = lineText.slice(0, m.index).replace(/[^A-Za-z0-9]/g, '');
-  // More than a label: digits, or more than two extra words ("Father's Name" is fine).
-  if (/\d/.test(restRaw) || rest.length > 16 || restRaw.trim().split(/\s+/).filter(Boolean).length > 2 || before.length > 12) return null;
-  const x0 = Math.min(...line.map((t) => t.x));
+  // More than a label: digits, or more than two extra real words ("Father's Name" is fine;
+  // OCR punctuation such as "=. =, .." is not a word).
+  const restWords = restRaw.trim().split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+  if (/\d/.test(restRaw) || rest.length > 16 || restWords > 2 || before.length > 12) return null;
+  // Anchor the column on the label's own tokens, not on speckle elsewhere in the row.
+  const labelToks = matchInLine(line, labelRe)[0]?.tokens ?? line;
+  const x0 = Math.min(...labelToks.map((t) => t.x));
   const y1 = Math.max(...line.map((t) => t.y + t.height));
   const h = Math.max(...line.map((t) => t.height));
   const nextY0 = Math.min(...next.map((t) => t.y));
   if (nextY0 - y1 > h * 2.5) return null;
-  const cluster = clusterByGap(next).find((c) => Math.abs(Math.min(...c.map((t) => t.x)) - x0) <= h * 3);
-  if (!cluster) return null;
-  const toks = cluster.filter((t) => !claimed.has(t.id) && t.text.replace(/[:\-–—.\s]/g, '').length > 0);
+  // The value starts at (or just right of) the label's column and runs until the
+  // first wide gap; speckle or other columns to the left are ignored.
+  const right = [...next].filter((t) => t.x >= x0 - h * 2).sort((a, b) => a.x - b.x);
+  const cluster: ExtractedSpatialToken[] = [];
+  for (const t of right) {
+    const prev = cluster[cluster.length - 1];
+    if (prev && t.x - (prev.x + prev.width) > Math.max(prev.height, t.height, 8) * 2.5) break;
+    cluster.push(t);
+  }
+  if (!cluster.length || cluster[0].x - x0 > h * 6) return null;
+  const toks = cluster.filter((t) => !claimed.has(t.id) && t.text.replace(/[:\-–—.\s=|~,]/g, '').length > 0);
   if (!toks.length) return null;
   const text = toks.map((t) => t.text).join(' ').trim();
   if (!text || re.test(text)) return null; // the next line is another label
@@ -939,21 +964,30 @@ export function classifyForScenario(
   const ageField = fields.find((f) => f.detect.kind === 'age_from_dob');
   const nameAboveField = fields.find((f) => f.detect.kind === 'name_above_dob');
   const photoField = fields.find((f) => f.detect.kind === 'aadhaar_photo_layout');
+  const cardPhotoField = fields.find((f) => f.detect.kind === 'card_photo_layout');
   const otherFields = fields.filter(
-    (f) => !['currency', 'age_from_dob', 'name_above_dob', 'aadhaar_photo_layout'].includes(f.detect.kind)
+    (f) => !['currency', 'age_from_dob', 'name_above_dob', 'aadhaar_photo_layout', 'card_photo_layout'].includes(f.detect.kind)
   );
+  let patternDobLineIdx = -1;
 
   // Pattern + label-anchored fields (identifiers, names, dates, addresses...).
   for (const field of otherFields) {
     for (const line of lines) {
       if (field.detect.kind === 'pattern') {
         // A "date of birth" field must not claim issue / validity / print dates.
-        if (field.key === 'dob' && RE_NON_BIRTH_DATE.test(line.map((t) => t.text).join(' '))) continue;
+        if (field.key === 'dob') {
+          const here = line.map((t) => t.text).join(' ');
+          const prev = lines[lines.indexOf(line) - 1];
+          const above = prev && prev[0].page === line[0].page ? prev.map((t) => t.text).join(' ') : '';
+          // "VALID UPTO" / "ISSUED" on this line, or as a label on the line above (card layouts).
+          if (RE_NON_BIRTH_DATE.test(here) || (RE_NON_BIRTH_DATE.test(above) && !RE_BIRTH_LINE.test(above) && !RE_BIRTH_LINE.test(here))) continue;
+        }
         const exact = matchInLine(line, field.detect.re);
         const matches = field.key === 'pan' && exact.length === 0 ? matchPanTolerant(line) : exact;
         for (const mt of matches) {
           if (isClaimed(mt.tokens)) continue;
           claim(mt.tokens);
+          if (field.key === 'dob' && patternDobLineIdx < 0) patternDobLineIdx = lines.indexOf(line);
           targets.push({
             id: `field_${field.key}_${counter++}`,
             label: field.label,
@@ -973,7 +1007,12 @@ export function classifyForScenario(
         let mv = matchLabelValue(line, field.detect.re);
         // A one- or two-character same-line "value" is speckle next to the label
         // ("Name Lo"); the real value is on the line below on card layouts.
-        if (!mv || mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 2) mv = valueBelowLabel(lines, li, field.detect.re, claimed) ?? (mv && mv.text.replace(/[^A-Za-z0-9]/g, '').length > 2 ? mv : null);
+        // Short or low-confidence same-line "values" are speckle next to the label
+        // ("Name Lo", "NAME Coe"); on card layouts the real value is the line below.
+        const weak = !!mv && (mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 3 || tokenConfidence(mv.tokens) < 45);
+        if (!mv || weak) mv = valueBelowLabel(lines, li, field.detect.re, claimed) ?? (mv && !weak ? mv : mv && mv.text.replace(/[^A-Za-z0-9]/g, '').length > 3 ? mv : null);
+        // A person-name field never takes institution/document boilerplate as its value.
+        if (mv && ['name', 'father', 'guardian'].includes(field.key) && RE_CARD_BOILERPLATE.test(mv.text)) mv = null;
         if (mv && !isClaimed(mv.tokens)) {
           claim(mv.tokens);
           targets.push({
@@ -1044,13 +1083,14 @@ export function classifyForScenario(
   // birth-labelled line, else the gender line (never depends on a correct DOB).
   const genderLineIdx = lines.findIndex((l) => RE_GENDER_LINE.test(l.map((t) => t.text).join(' ')));
   const birthLabelIdx = lines.findIndex((l) => RE_BIRTH_LINE.test(l.map((t) => t.text).join(' ')));
-  const anchorIdx = dobLineIdx >= 0 ? dobLineIdx : birthLabelIdx >= 0 ? birthLabelIdx : genderLineIdx;
+  const anchorIdx = dobLineIdx >= 0 ? dobLineIdx : patternDobLineIdx >= 0 ? patternDobLineIdx : birthLabelIdx >= 0 ? birthLabelIdx : genderLineIdx;
+  const nameAlreadyFound = targets.some((t) => t.fieldKey === 'name');
 
   // Name: on Aadhaar the (Latin-script) name sits directly above the DOB line,
   // left-aligned in the same column. Require column alignment + real letters so
   // OCR speckle elsewhere on the card can never be mistaken for a name.
   let nameLineIdx = -1;
-  if (nameAboveField && anchorIdx > 0) {
+  if (nameAboveField && anchorIdx > 0 && !nameAlreadyFound) {
     const anchorLine = lines[anchorIdx];
     const dobX0 = Math.min(...anchorLine.map((t) => t.x));
     const dobH = Math.max(...anchorLine.map((t) => t.height));
@@ -1058,8 +1098,9 @@ export function classifyForScenario(
     for (let li = anchorIdx - 1; li >= Math.max(0, anchorIdx - 4); li--) {
       const line = lines[li];
       const lineText = line.map((t) => t.text).join(' ').trim();
-      if (!lineText || RE_DEVANAGARI.test(lineText) || RE_AADHAAR_BOILERPLATE.test(lineText)) continue;
+      if (!lineText || RE_DEVANAGARI.test(lineText) || RE_AADHAAR_BOILERPLATE.test(lineText) || RE_CARD_BOILERPLATE.test(lineText)) continue;
       if (RE_GUARDIAN_LINE.test(lineText)) continue; // "S/O …" is the guardian, not the holder
+      if (/\b(?:name|d\.?o\.?b|birth|roll|course|class|branch|reg)\b/i.test(lineText) && lineText.replace(/[^A-Za-z]/g, '').length <= 12) continue; // a bare label
       const letters = lineText.replace(/[^A-Za-z]/g, '');
       if (letters.length < 3 || letters.length / lineText.replace(/\s/g, '').length < 0.8) continue;
       // Only the cluster that shares the DOB column is the name; anything to the
@@ -1125,6 +1166,45 @@ export function classifyForScenario(
           source: 'OCR_AUTO',
           fieldKey: photoField.key,
         });
+      }
+    }
+  }
+
+  // Generic ID cards: the portrait sits in the empty column left of the text
+  // block. Only inferred when the text block starts well inside the page.
+  if (cardPhotoField && !targets.some((t) => t.fieldKey === 'photo')) {
+    const pageTargets = targets.filter((t) => t.page === (targets[0]?.page ?? 1) && t.action !== 'DETECT_ONLY');
+    if (pageTargets.length >= 2) {
+      const pageW = Math.max(...tokens.map((t) => t.x + t.width));
+      const pageH = Math.max(...tokens.map((t) => t.y + t.height));
+      const colX0 = Math.min(...pageTargets.map((t) => t.x));
+      const top = Math.min(...pageTargets.map((t) => t.y));
+      const bottom = Math.max(...pageTargets.map((t) => t.y + t.height));
+      const lineH = Math.max(12, Math.min(...pageTargets.map((t) => t.height)));
+      const leftTokens = tokens.filter(
+        (t) => t.page === pageTargets[0].page && t.x + t.width < colX0 - lineH && t.y > top - lineH * 2 && t.y < top + (bottom - top) * 0.6 && t.text.replace(/[^A-Za-z]/g, '').length >= 3
+      );
+      if (colX0 > pageW * 0.22 && leftTokens.length <= 2) {
+        const x0 = Math.max(0, Math.round(lineH * 0.5));
+        const x1 = Math.round(colX0 - lineH * 0.8);
+        const height = Math.min(bottom - top + lineH * 2, pageH - top);
+        const width = x1 - x0;
+        if (width >= lineH * 2.5 && height >= lineH * 3) {
+          targets.push({
+            id: `field_${cardPhotoField.key}_${counter++}`,
+            label: cardPhotoField.label,
+            classification: cardPhotoField.classification,
+            extractedValue: '[image region · inferred from card layout]',
+            x: x0,
+            y: Math.max(0, Math.round(top - lineH)),
+            width: Math.round(Math.min(width, height * 0.9)),
+            height: Math.round(height),
+            page: pageTargets[0].page,
+            action: cardPhotoField.action,
+            source: 'OCR_AUTO',
+            fieldKey: cardPhotoField.key,
+          });
+        }
       }
     }
   }

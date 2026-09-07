@@ -38,7 +38,9 @@ export type FieldDetector =
   // The Latin-script name line directly above the DOB line (Aadhaar card layout).
   | { kind: 'name_above_dob' }
   // Aadhaar portrait region inferred from the demographic-column geometry.
-  | { kind: 'aadhaar_photo_layout' };
+  | { kind: 'aadhaar_photo_layout' }
+  // Generic ID-card portrait: the empty column left of the text block.
+  | { kind: 'card_photo_layout' };
 
 export interface ScenarioField {
   key: string;
@@ -84,6 +86,9 @@ export const RE_PAN = /\b[A-Z]{5}\d{4}[A-Z]\b/;                      // ABCDE123
 export const RE_IFSC = /\b[A-Z]{4}0[A-Z0-9]{6}\b/;                   // HDFC0001234
 export const RE_ACCOUNT = /\b\d{9,18}\b/;                            // bank account no.
 export const RE_DATE = /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/;    // 01/02/1990
+// Dates as printed on cards: 01/02/1990, 1-2-1990, 15 Aug 2003, 15-Aug-2003, August 15, 2003
+export const RE_DATE_ANY =
+  /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b|\b\d{1,2}(?:st|nd|rd|th)?[\s\-.,]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[\s\-.,]+\d{2,4}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[\s\-.,]+\d{1,2}(?:st|nd|rd|th)?[\s\-.,]+\d{4}\b/i;
 export const RE_YEAR = /\b(?:19|20)\d{2}\b/;
 export const RE_EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/;
 export const RE_PHONE_IN = /\b(?:\+91[\-\s]?)?[6-9]\d{9}\b/;         // Indian mobile
@@ -97,7 +102,8 @@ export const RE_CURRENCY =
 const L_NAME = /\bname\b/i;
 const L_FATHER = /\bfather'?s?\b/i;
 const L_ADDRESS = /\baddress\b/i;
-const L_ROLL = /\b(?:roll(?:\s*(?:no|number))?|enrol?ment(?:\s*(?:no|number))?)\b/i;
+// No leading boundary: OCR often fuses the label ("UROLLNO", "ROLLNO").
+const L_ROLL = /(?:roll\s*(?:no|number)?|enrol?ment\s*(?:no|number)?)\b/i;
 const L_REG = /\b(?:reg(?:istration)?\.?\s*(?:no|number)?|registration)\b/i;
 const L_DEPT = /\b(?:dept|department|branch|programme|program|course)\b/i;
 const L_BATCH = /\b(?:batch|session|semester|academic year|year of study)\b/i;
@@ -126,7 +132,16 @@ const nameField = (): ScenarioField => ({
 });
 const dobField = (): ScenarioField => ({
   key: 'dob', label: 'Date / Year of Birth', classification: 'Date of Birth (PII)',
-  action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_DATE }, priority: 20,
+  action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_DATE_ANY }, priority: 20,
+});
+// Name printed without a label (common on student IDs): the letters-only line above the DOB.
+const nameNearDobField = (): ScenarioField => ({
+  key: 'name', label: 'Full Name', classification: 'Personal Name (PII)',
+  action: 'DIRECT_BURN', detect: { kind: 'name_above_dob' }, priority: 31,
+});
+const cardPhotoField = (): ScenarioField => ({
+  key: 'photo', label: 'Photo (face)', classification: 'Portrait Region (layout-inferred)',
+  action: 'DIRECT_BURN', detect: { kind: 'card_photo_layout' }, priority: 60,
 });
 const addressField = (): ScenarioField => ({
   key: 'address', label: 'Address', classification: 'Residential Address (PII)',
@@ -174,6 +189,7 @@ export const SCENARIOS: DocumentScenario[] = [
       nameField(),
       { key: 'father', label: "Father's Name", classification: 'Parent Name (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_FATHER }, priority: 25 },
       dobField(),
+      cardPhotoField(),
     ],
     defaults: { requesterName: 'KYC Verification Desk', purpose: 'PAN-based identity KYC (privacy-preserving)', predicate: PREDICATE_SEAL_ONLY, thresholdValue: 0, unit: '' },
   },
@@ -186,11 +202,13 @@ export const SCENARIOS: DocumentScenario[] = [
     proofMode: 'SEAL_ONLY',
     fields: [
       { key: 'name', label: 'Student Name', classification: 'Personal Name (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_NAME }, priority: 30 },
+      { ...nameNearDobField(), label: 'Student Name' },
       { key: 'roll', label: 'Roll Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_ROLL }, priority: 20 },
       { key: 'registration', label: 'Registration Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_REG }, priority: 21 },
       { key: 'department', label: 'Department / Branch', classification: 'Institutional Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_DEPT }, priority: 32 },
       { key: 'batch', label: 'Batch / Year', classification: 'Institutional Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_BATCH }, priority: 33 },
       dobField(),
+      cardPhotoField(),
     ],
     defaults: { requesterName: 'Campus Access Control', purpose: 'Student identity verification (privacy-preserving)', predicate: PREDICATE_SEAL_ONLY, thresholdValue: 0, unit: '' },
   },
@@ -270,10 +288,12 @@ export const SCENARIOS: DocumentScenario[] = [
       { key: 'aadhaar', label: 'Aadhaar Number', classification: 'Aadhaar / UIDAI Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_AADHAAR }, priority: 6 },
       { key: 'pan', label: 'PAN', classification: 'Permanent Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_PAN }, priority: 6 },
       nameField(),
+      nameNearDobField(),
       dobField(),
       addressField(),
       phoneField(),
       emailField(),
+      cardPhotoField(),
     ],
     defaults: { requesterName: 'Identity Verification Desk', purpose: 'General identity KYC (privacy-preserving)', predicate: PREDICATE_SEAL_ONLY, thresholdValue: 0, unit: '' },
   },

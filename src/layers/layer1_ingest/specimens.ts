@@ -123,23 +123,29 @@ export async function generatePanCardPng(): Promise<Uint8Array> {
   return toPng(c);
 }
 
-/** Student ID card: label/value pairs on single lines. */
+/** Student ID card as printed by most institutions: institution header,
+ *  portrait on the left, labels ABOVE values, date of birth with a month name. */
 export async function generateCollegeIdPng(): Promise<Uint8Array> {
   const { c, ctx } = newCard();
   band(ctx, 1000, '#0f766e', 'SPECIMEN INSTITUTE OF TECHNOLOGY', 'STUDENT ID');
-  photoBox(ctx, 60, 140, 200, 250);
-  const lines = [
-    'Name: Specimen Student',
-    'Roll No: 21CS1042',
-    'Reg. No: SIT/2021/CSE/0421',
-    'Department: Computer Science',
-    'Batch: 2021 - 2025',
-    'DOB: 15/08/2003',
-    'Valid Till: 31/07/2025',
+  ctx.fillStyle = '#111827';
+  ctx.font = '600 24px Arial, sans-serif';
+  ctx.fillText('STUDENT IDENTITY CARD  ·  2021-2025', 300, 132);
+  photoBox(ctx, 60, 150, 200, 250);
+  const pairs: [string, string][] = [
+    ['NAME', 'ARJUN SPECIMEN'],
+    ['D.O.B', '15 Aug 2003'],
+    ['COURSE', 'B.Tech Computer Science'],
+    ['ROLL NO', '21CS1042'],
   ];
-  lines.forEach((t, i) => row(ctx, t, 300, 175 + i * 50));
+  pairs.forEach(([k, v], i) => {
+    small(ctx, k, 300, 178 + i * 88);
+    big(ctx, v, 300, 214 + i * 88, 30);
+  });
+  small(ctx, 'VALID UPTO', 700, 442);
+  big(ctx, '31/07/2025', 700, 478, 26);
   barcode(ctx, 60, 440, 200, 60);
-  small(ctx, 'Student Identity Card', 60, 540);
+  small(ctx, 'Principal', 60, 540);
   watermark(ctx, 1000, 630);
   return toPng(c);
 }

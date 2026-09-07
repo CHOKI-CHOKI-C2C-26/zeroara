@@ -18,13 +18,13 @@ const check = (c, m) => { log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; 
 
 const EXPECT = {
   aadhaar: { label: 'Aadhaar Card', fields: ['Aadhaar Number', 'Date of Birth', 'Full Name', 'Gender', 'Photo (face)'], witness: 'Date of Birth', proof: true },
-  pan: { label: 'PAN Card', fields: ['PAN', 'Full Name', "Father's Name", 'Date / Year of Birth'], proof: false },
-  college_id: { label: 'College / Student ID', fields: ['Student Name', 'Roll Number', 'Registration Number', 'Department / Branch', 'Batch / Year', 'Date / Year of Birth'], proof: false },
+  pan: { label: 'PAN Card', fields: ['PAN', 'Full Name', "Father's Name", 'Date / Year of Birth', 'Photo (face)'], proof: false },
+  college_id: { label: 'College / Student ID', fields: ['Student Name', 'Roll Number', 'Department / Branch', 'Date / Year of Birth', 'Photo (face)'], proof: false },
   bank_statement: { label: 'Bank Statement', fields: ['Account Number', 'IFSC Code', 'Customer ID', 'Full Name', 'Closing Balance'], witness: 'Closing Balance', value: '2,84,300', proof: true },
   salary_slip: { label: 'Salary Slip', fields: ['PAN / Tax ID', 'UAN', 'Bank Account Number', 'Employee ID', 'Full Name', 'Employer', 'Net Pay'], witness: 'Net Pay', value: '62,450', proof: true },
   tax_form: { label: 'Tax Form', fields: ['PAN', 'Employer TAN', 'Full Name', 'Address', 'Total Income'], witness: 'Total Income', value: '7,20,000', proof: true },
   income_accredited: { label: 'Accredited Investor / Income', fields: ['Social Security Number', '2-Year Trailing Income'], witness: '2-Year Trailing Income', value: '145,000', proof: true },
-  generic_id: { label: 'Generic Identity Document', fields: ['Document / ID Number', 'Full Name', 'Date / Year of Birth', 'Address', 'Phone Number', 'Email Address'], proof: false },
+  generic_id: { label: 'Generic Identity Document', fields: ['Document / ID Number', 'Full Name', 'Date / Year of Birth', 'Address', 'Phone Number', 'Email Address', 'Photo (face)'], proof: false },
   generic_financial: { label: 'Generic Financial Document', fields: ['Account Number', 'Routing / IFSC', 'Email Address', 'Total Amount'], witness: 'Total Amount', value: '75,000', proof: true },
 };
 const only = process.env.ONLY ? process.env.ONLY.split(',') : Object.keys(EXPECT);
@@ -58,7 +58,7 @@ for (const id of only) {
       check(!!w && /meets requirement/.test(w), `${id}: witness "${exp.witness}" meets the default requirement`);
       if (exp.value) check(!!w && w.includes(exp.value), `${id}: witness value contains ${exp.value}`);
     }
-    check(!/SPECIMEN|specimen/.test(flat.replace(/SPECIMEN PERSON|Specimen Person|Specimen Student|SPECIMEN TECHNOLOGIES|Specimen Technologies|RAMESH SPECIMEN|specimen\.person/g, '')), `${id}: watermark text not mistaken for a field`);
+    check(!/SPECIMEN|specimen/.test(flat.replace(/SPECIMEN PERSON|Specimen Person|Specimen Student|ARJUN SPECIMEN|SPECIMEN TECHNOLOGIES|Specimen Technologies|RAMESH SPECIMEN|specimen\.person/g, '')), `${id}: watermark text not mistaken for a field`);
 
     await page.getByRole('button', { name: 'Burn & flatten', exact: true }).click();
     await page.locator('[data-tour="step-3"]').filter({ hasText: /zones/ }).waitFor({ timeout: 60000 });

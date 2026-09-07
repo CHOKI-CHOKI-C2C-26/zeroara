@@ -396,6 +396,11 @@ export function App() {
 
         setExtractedTokens(result.tokens);
         setDetectedFields(result.targets);
+        if (import.meta.env.DEV) {
+          const dev = ((window as unknown as { __zeroaraDev?: Record<string, unknown> }).__zeroaraDev ??= {});
+          dev.lastTokens = result.tokens;
+          dev.lastTargets = result.targets;
+        }
         if (result.targets.length > 0) {
           setSelectedFieldId(result.targets[0].id);
         }
@@ -1921,7 +1926,7 @@ export function App() {
                           ) : (
                             <StatusBadge tone={detectedFields.length > 0 ? 'ok' : 'warn'}>{detectedFields.length > 0 ? `${detectedFields.length} targets detected` : 'No targets detected'}</StatusBadge>
                           )}
-                          {scenario.id === 'aadhaar' && !ocrRunning && doc && (
+                          {['aadhaar', 'pan', 'college_id', 'generic_id'].includes(scenario.id) && !ocrRunning && doc && (
                             <div style={{ display: 'flex', gap: '6px' }}>
                               <button type="button" className="neu-pill-btn" style={{ fontSize: '0.68rem', padding: '3px 9px' }} onClick={() => addRegionTarget('photo')}>
                                 + Photo region
