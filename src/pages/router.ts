@@ -16,7 +16,8 @@ export function currentRoute(): Route {
 
 /** Client-side navigation; the root listens to popstate. */
 export function navigate(path: string) {
-  if (window.location.pathname === path) return;
+  const current = window.location.pathname + (window.location.search || '');
+  if (current === path) return;
   window.history.pushState(null, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }

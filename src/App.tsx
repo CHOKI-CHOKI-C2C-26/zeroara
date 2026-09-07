@@ -1567,11 +1567,12 @@ export function App() {
                   e.preventDefault();
                   navigate('/');
                 }}
-                style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}
+                className="landing-brand"
+                style={{ fontSize: '1.65rem', gap: '12px' }}
                 aria-label="Zeroara home"
               >
-                <img src="/logo.png" alt="Zeroara Logo" style={{ width: '30px', height: '30px', objectFit: 'contain', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(234, 88, 12, 0.3))' }} />
-                <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>ZEROARA</span>
+                <img src="/logo.png" alt="Zeroara Logo" className="landing-brand-logo" style={{ height: '46px', width: 'auto', maxWidth: '75px' }} />
+                <span>ZEROARA</span>
               </a>
               <span className="neu-severed-pill">
                 <WifiOff size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
