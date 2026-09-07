@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri",
-    "test:zk": "node scripts/test_layer4_zk.cjs"
+    "test:zk": "node scripts/test_layer4_zk.cjs",
+    "verifier": "node server/verifier-api.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

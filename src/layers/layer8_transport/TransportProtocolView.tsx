@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Radio, ExternalLink } from 'lucide-react';
+import { buildZeroaraDeepLink } from './transportEngine';
 
 interface TransportProtocolViewProps {
   onBackToStudio?: () => void;
@@ -14,19 +15,21 @@ export const TransportProtocolView: React.FC<TransportProtocolViewProps> = ({
   const [generatedUri, setGeneratedUri] = useState('');
 
   const handleGenerateUri = () => {
-    const payload = {
-      requestId: `req_${Date.now()}`,
-      requesterName: 'Apex Lending & Capital Markets',
-      requesterOrigin: simulatedOrigin,
-      targetField: 'Annual Income Attestation',
-      predicate: '>=',
-      thresholdValue: threshold,
-      currency: 'USD',
-      challengeNonce: '0x' + Array.from(crypto.getRandomValues(new Uint8Array(8))).map(b => b.toString(16).padStart(2, '0')).join(''),
-      callbackUrl: `${simulatedOrigin}/api/kyc/callback`,
-    };
-    const b64 = btoa(JSON.stringify(payload));
-    setGeneratedUri(`zeroara://verify?request=${b64}`);
+    const nonce = '0x' + Array.from(crypto.getRandomValues(new Uint8Array(24))).map((b) => b.toString(16).padStart(2, '0')).join('');
+    setGeneratedUri(
+      buildZeroaraDeepLink({
+        version: 1,
+        requestId: 'req_' + Array.from(crypto.getRandomValues(new Uint8Array(6))).map((b) => b.toString(16).padStart(2, '0')).join(''),
+        requester: 'Apex Lending & Capital Markets',
+        purpose: 'Accredited-investor onboarding',
+        document: 'income_accredited',
+        claim: { field: 'Annual income', op: '>=', value: threshold, unit: 'USD' },
+        nonce,
+        issuedAt: new Date().toISOString(),
+        callbackUrl: `${simulatedOrigin}/api/verify/callback`,
+        wantRedactedPdf: true,
+      })
+    );
   };
 
   return (

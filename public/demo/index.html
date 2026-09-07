@@ -93,7 +93,11 @@
           <option value="auto">auto (popup, falls back to an overlay)</option>
           <option value="popup">popup window</option>
           <option value="iframe">overlay inside this page</option>
+          <option value="desktop">desktop app via verifier API (zeroara:// deep link, web fallback)</option>
         </select>
+      </label>
+      <label id="api-row" hidden>Verifier API base URL (desktop mode)
+        <input id="api" value="http://localhost:8787" />
       </label>
 
       <button class="primary" id="verify">Verify with Zeroara</button>
@@ -152,6 +156,8 @@
         if (!sealOnly && $('value').value !== '') {
           o.claim = { field: $('field').value || undefined, op: '>=', value: Number($('value').value), unit: $('unit').value || undefined };
         }
+        if (o.mode === 'desktop') { o.api = $('api').value.replace(/\/+$/, ''); o.wantRedactedPdf = true; o.fallback = 'auto'; }
+        $('api-row').hidden = o.mode !== 'desktop';
         return o;
       }
       function renderSnippet() {
@@ -176,7 +182,7 @@
       Array.prototype.forEach.call(document.querySelectorAll('[data-preset]'), function (b) {
         b.addEventListener('click', function () { applyPreset(PRESETS[b.getAttribute('data-preset')]); });
       });
-      ['document', 'requester', 'field', 'value', 'unit', 'purpose', 'mode'].forEach(function (id) { $(id).addEventListener('input', renderSnippet); $(id).addEventListener('change', renderSnippet); });
+      ['document', 'requester', 'field', 'value', 'unit', 'purpose', 'mode', 'api'].forEach(function (id) { $(id).addEventListener('input', renderSnippet); $(id).addEventListener('change', renderSnippet); });
       $('sdkurl').textContent = Zeroara.origin + '/sdk/zeroara.js';
       renderSnippet();
 
@@ -186,8 +192,29 @@
         $('details').hidden = true; $('gates').innerHTML = '';
         setStatus('pending', 'Waiting for the user to finish in Zeroara…', 'Document type: ' + o.document + (o.claim ? ' · claim: ' + (o.claim.field || 'value') + ' ≥ ' + o.claim.value + ' ' + (o.claim.unit || '') : ' · seal-only'));
         try {
+          o.onStatus = function (s) {
+            if (s.status === 'PENDING') setStatus('pending', s.launched ? 'Opening the Zeroara app… waiting for the proof' : 'Waiting for the proof…', 'Session ' + s.requestId + '. If the desktop app is not installed, a web fallback opens here after a few seconds.');
+          };
           var result = await Zeroara.verify(o);
           last = result;
+          if (result.transport && result.transport !== 'browser') {
+            var v = result.verification || {};
+            if (result.ok) setStatus('ok', '✔ Verified by the verifier API', 'Status ' + result.status + ' via ' + result.transport + '. The API checked nonce, Groth16 proof, threshold, seal and hash server-side. 0 bytes of the document were received.');
+            else setStatus('bad', '✖ ' + result.status, (result.reasons || []).join(' ') || 'Not verified.');
+            $('r-id').textContent = result.requestId;
+            $('r-doc').textContent = v.document || o.document;
+            $('r-claim').textContent = v.claim ? ((v.claim.field || 'Value') + ' ≥ ' + v.claim.value + ' ' + (v.claim.unit || '')) : 'none (seal-only)';
+            $('r-nonce').textContent = 'checked by the API · ' + short(result.nonce);
+            $('r-proof').textContent = v.proofVerified ? 'Groth16 · verified server-side (' + v.proofVerifyMs + ' ms)' : (v.redactionMode === 'SEAL_ONLY' ? 'none (seal-only)' : 'not verified');
+            $('r-seal').textContent = short(v.masterAuditSeal);
+            $('r-pdf').textContent = result.redactedPdfUrl ? 'stored by the API' : 'not included';
+            $('raw').textContent = JSON.stringify(result.record, null, 2);
+            $('dl-pdf').onclick = function () { if (result.redactedPdfUrl) window.open(result.redactedPdfUrl, '_blank'); };
+            $('audit').disabled = true;
+            $('details').hidden = false;
+            return;
+          }
+          $('audit').disabled = false;
           var b = result.bundle;
           if (result.ok) {
             setStatus('ok', '✔ Verified: ' + (o.claim ? (o.claim.field || 'Value') + ' ≥ ' + o.claim.value + ' ' + (o.claim.unit || '') : 'redaction sealed'), 'Zero PII retained. 0 bytes of sensitive data received. The receipt satisfies every requirement of this request.');

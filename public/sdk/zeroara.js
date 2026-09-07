@@ -1,5 +1,12 @@
-/*! Zeroara Verify SDK v1.0.0
+/*! Zeroara Verify SDK v1.1.0
  *  Drop-in "Verify with Zeroara" for any website. Zero dependencies.
+ *
+ *  Two transports:
+ *   - browser  (mode 'auto' | 'popup' | 'iframe'): Zeroara's web app opens in a
+ *     popup or overlay and hands the result back over postMessage.
+ *   - desktop  (mode 'desktop'): your verifier API issues a session, the OS opens
+ *     the offline Zeroara app through zeroara://verify?request=..., the app POSTs
+ *     the result to the API's callback, and this SDK watches the session status.
  *
  *  <script src="https://zeroara.vercel.app/sdk/zeroara.js"></script>
  *  const result = await Zeroara.verify({
@@ -17,7 +24,7 @@
 (function (global) {
   'use strict';
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var scriptOrigin = (function () {
     try {
       var s = document.currentScript;
@@ -81,6 +88,7 @@
       nonce: options.nonce || ('0x' + randomHex(24)),
       replyOrigin: location.origin,
       issuedAt: new Date().toISOString(),
+      wantRedactedPdf: options.wantRedactedPdf !== false,
     };
   }
 
@@ -179,16 +187,23 @@
         if (msg.type === 'zeroara:result') {
           var result = {
             ok: false,
+            status: (msg.verification && msg.verification.status) || (msg.bundle ? 'VERIFIED' : 'FAILED'),
             requestId: msg.requestId,
             request: request,
-            bundle: msg.bundle,
+            bundle: msg.bundle || null,
+            verification: msg.verification || null,
             redactedPdfBase64: msg.redactedPdfBase64 || '',
             redactedPdfBytes: base64ToBytes(msg.redactedPdfBase64),
             fileName: msg.fileName || 'redacted.pdf',
             deliveredAt: msg.deliveredAt,
             origin: e.origin,
+            transport: 'browser',
           };
-          result.checks = check(result, request);
+          if (msg.verification && msg.verification.status !== 'VERIFIED') {
+            result.checks = { ok: false, reasons: [msg.verification.reason || 'The claim was not satisfied.'] };
+          } else {
+            result.checks = check(result, request);
+          }
           result.ok = result.checks.ok;
           cleanup();
           resolve(result);
@@ -250,5 +265,200 @@
     });
   }
 
-  global.Zeroara = { version: VERSION, origin: scriptOrigin, verify: verify, check: check, audit: audit, buildRequest: buildRequest };
+  /* ------------------------------------------------------------------ */
+  /* Desktop transport: verifier API session + zeroara:// deep link        */
+  /* ------------------------------------------------------------------ */
+
+  function apiBase(options) {
+    var api = (options.api || '').replace(/\/+$/, '');
+    if (!api) throw fail('Zeroara.verify: options.api (your verifier API base URL) is required for mode "desktop"', 'BAD_REQUEST');
+    return api;
+  }
+
+  function desktopInit(api, options) {
+    if (typeof options.document !== 'string' || !options.document) throw fail('Zeroara.verify: options.document is required', 'BAD_REQUEST');
+    return fetch(api + '/api/verify/init', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ document: options.document, claim: options.claim || null, requester: options.requester || document.title || location.host, purpose: options.purpose || '', wantRedactedPdf: options.wantRedactedPdf === true }),
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || !j.ok) throw fail((j && j.error) || 'The verifier API refused to create a session.', 'INIT_FAILED');
+        return j;
+      });
+    });
+  }
+
+  function fetchStatus(api, id) {
+    return fetch(api + '/api/verify/status/' + encodeURIComponent(id), { cache: 'no-store', headers: { Accept: 'application/json' } }).then(function (r) { return r.json(); });
+  }
+
+  /** Watch a session: server-sent events when available, polling otherwise. Returns stop(). */
+  function watchStatus(api, id, onUpdate) {
+    var stopped = false, es = null, pollTimer = null;
+    function poll() {
+      if (stopped) return;
+      fetchStatus(api, id).then(function (s) { if (!stopped) onUpdate(s); }).catch(function () {});
+      pollTimer = setTimeout(poll, 1500);
+    }
+    if (typeof EventSource !== 'undefined') {
+      try {
+        es = new EventSource(api + '/api/verify/events/' + encodeURIComponent(id));
+        es.addEventListener('status', function (e) { try { onUpdate(JSON.parse(e.data)); } catch (err) { /* ignore */ } });
+        es.onerror = function () { if (es) { es.close(); es = null; } if (!pollTimer) poll(); };
+      } catch (e) { poll(); }
+    } else poll();
+    var safety = setInterval(function () { fetchStatus(api, id).then(function (s) { if (!stopped) onUpdate(s); }).catch(function () {}); }, 5000);
+    return function stop() { stopped = true; if (es) es.close(); if (pollTimer) clearTimeout(pollTimer); clearInterval(safety); };
+  }
+
+  /** Ask the OS to open the offline app. Cannot detect whether a handler exists. */
+  function launchDeepLink(url) {
+    try {
+      var a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (e) {
+      try { global.location.assign(url); return true; } catch (e2) { return false; }
+    }
+  }
+
+  function verifyDesktop(options) {
+    var api, origin = options.origin || scriptOrigin;
+    try { api = apiBase(options); } catch (e) { return Promise.reject(e); }
+    var fallbackMode = options.fallback || 'auto'; // 'auto' | 'iframe' | 'popup' | 'none'
+    var fallbackAfterMs = typeof options.fallbackAfterMs === 'number' ? options.fallbackAfterMs : 3500;
+    var timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 10 * 60 * 1000;
+
+    return desktopInit(api, options).then(function (session) {
+      return new Promise(function (resolve, reject) {
+        var settled = false, stopWatch = null, frame = null, fbTimer = null, toTimer = null, last = null;
+        var webUrl = origin + '/?request=' + base64UrlEncode(JSON.stringify(session.request));
+
+        function notify(s) { last = s; if (options.onStatus) { try { options.onStatus(s); } catch (e) { /* ignore */ } } }
+        function cleanup() {
+          settled = true;
+          if (stopWatch) stopWatch();
+          if (frame && !options.keepOpen) frame.close();
+          if (fbTimer) clearTimeout(fbTimer);
+          if (toTimer) clearTimeout(toTimer);
+          global.removeEventListener('message', onMessage);
+        }
+        function finish(s) {
+          if (settled) return;
+          var usedWeb = !!frame;
+          cleanup();
+          resolve({
+            ok: s.status === 'VERIFIED',
+            status: s.status,
+            requestId: s.requestId,
+            nonce: session.nonce,
+            request: session.request,
+            record: s,
+            verification: s.verification || null,
+            reasons: s.reasons || [],
+            redactedPdfUrl: s.redactedPdfUrl || null,
+            transport: usedWeb ? 'web-fallback' : 'desktop',
+          });
+        }
+        function onUpdate(s) {
+          if (!s || settled || !s.requestId) return;
+          notify(s);
+          if (s.status && s.status !== 'PENDING') finish(s);
+        }
+        function openFallback(kind) {
+          if (settled || frame) return;
+          if (kind === 'popup') { frame = openPopup(webUrl); }
+          if (!frame) frame = openFrame(webUrl, options);
+          if (frame.onClose) frame.onClose(function () { if (!settled) { cleanup(); reject(fail('The Zeroara panel was closed before a result was returned.', 'CLOSED')); } });
+          if (frame.kind === 'popup') {
+            var poll = setInterval(function () { if (settled) { clearInterval(poll); return; } if (frame.target && frame.target.closed) { clearInterval(poll); fetchStatus(api, session.requestId).then(function (s) { if (s && s.status !== 'PENDING') onUpdate(s); else { cleanup(); reject(fail('The Zeroara window was closed before a result was returned.', 'CLOSED')); } }).catch(function () { cleanup(); reject(fail('The Zeroara window was closed.', 'CLOSED')); }); } }, 500);
+          }
+        }
+        function onMessage(e) {
+          if (e.origin !== origin || !e.data || typeof e.data !== 'object') return;
+          var msg = e.data;
+          if (msg.type === 'zeroara:ready' && frame && frame.target) {
+            // Authenticates this origin for the delivered/cancel notifications.
+            frame.target.postMessage({ type: 'zeroara:request', version: 1, request: session.request }, origin);
+          } else if (msg.type === 'zeroara:delivered' && msg.requestId === session.requestId) {
+            fetchStatus(api, session.requestId).then(onUpdate).catch(function () {});
+          } else if (msg.type === 'zeroara:cancel' && msg.requestId === session.requestId) {
+            cleanup();
+            reject(fail('The user cancelled the verification.', 'CANCELLED'));
+          }
+        }
+
+        global.addEventListener('message', onMessage);
+        stopWatch = watchStatus(api, session.requestId, onUpdate);
+        var launched = options.openApp === false ? false : launchDeepLink(session.deepLink);
+        notify({ requestId: session.requestId, status: 'PENDING', launched: launched, deepLink: session.deepLink, webFallbackUrl: webUrl });
+
+        var openWeb = function (kind) { openFallback(kind || 'iframe'); };
+        if (fallbackMode !== 'none') {
+          fbTimer = setTimeout(function () {
+            if (settled || (last && last.status && last.status !== 'PENDING')) return;
+            if (options.onFallback) { try { options.onFallback(openWeb, session); } catch (e) { /* ignore */ } }
+            else if (fallbackMode === 'auto' || fallbackMode === 'iframe') openWeb('iframe');
+          }, fallbackAfterMs);
+        }
+        toTimer = setTimeout(function () { if (!settled) { cleanup(); reject(fail('Timed out waiting for Zeroara.', 'TIMEOUT')); } }, timeoutMs);
+      });
+    });
+  }
+
+  /** Embeddable "Verify with Zeroara" button with a status line and a web fallback link. */
+  function mount(target, options) {
+    var el = typeof target === 'string' ? document.querySelector(target) : target;
+    if (!el) throw fail('Zeroara.mount: target element not found', 'BAD_REQUEST');
+    options = options || {};
+    var wrap = document.createElement('div');
+    wrap.setAttribute('data-zeroara', 'widget');
+    wrap.style.cssText = 'display:inline-flex;flex-direction:column;gap:8px;font:14px/1.4 system-ui,-apple-system,sans-serif;';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = options.label || 'Verify with Zeroara';
+    btn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border:0;border-radius:12px;background:#EA580C;color:#fff;font-weight:700;font-size:15px;cursor:pointer;box-shadow:0 6px 16px rgba(234,88,12,.35);';
+    var status = document.createElement('div');
+    status.style.cssText = 'font-size:13px;color:#475569;min-height:18px;';
+    status.textContent = options.hint || 'Zero-knowledge · nothing leaves your device';
+    var link = document.createElement('button');
+    link.type = 'button';
+    link.textContent = options.fallbackLabel || 'Zeroara did not open? Continue in the browser';
+    link.style.cssText = 'display:none;background:none;border:0;padding:0;color:#EA580C;text-decoration:underline;cursor:pointer;font-size:13px;text-align:left;';
+    wrap.appendChild(btn); wrap.appendChild(status); wrap.appendChild(link);
+    el.appendChild(wrap);
+    var busy = false;
+    btn.onclick = function () {
+      if (busy) return;
+      busy = true; btn.disabled = true; link.style.display = 'none';
+      status.textContent = options.mode === 'desktop' ? 'Opening Zeroara…' : 'Waiting for Zeroara…';
+      var opts = Object.assign({}, options, {
+        onStatus: function (s) { if (s.status === 'PENDING') status.textContent = 'Waiting for you to finish in Zeroara…'; if (options.onStatus) options.onStatus(s); },
+        onFallback: function (open) { link.style.display = 'inline'; link.onclick = function () { link.style.display = 'none'; open('popup'); }; if (options.onFallback) options.onFallback(open); },
+      });
+      verify(opts).then(function (r) {
+        status.textContent = r.ok ? '✔ Verified' : '✖ ' + ((r.checks && r.checks.reasons && r.checks.reasons[0]) || (r.reasons && r.reasons[0]) || r.status);
+        if (options.onResult) options.onResult(r);
+      }, function (err) {
+        status.textContent = '✖ ' + err.message;
+        if (options.onError) options.onError(err);
+      }).then(function () { busy = false; btn.disabled = false; });
+    };
+    return { element: wrap, destroy: function () { wrap.remove(); } };
+  }
+
+  var verifyBrowser = verify;
+  verify = function (options) {
+    options = options || {};
+    if (options.mode === 'desktop') return verifyDesktop(options);
+    return verifyBrowser(options);
+  };
+
+  global.Zeroara = { version: VERSION, origin: scriptOrigin, verify: verify, check: check, audit: audit, buildRequest: buildRequest, mount: mount, desktop: { init: desktopInit, watchStatus: watchStatus, fetchStatus: fetchStatus, launchDeepLink: launchDeepLink } };
 })(window);

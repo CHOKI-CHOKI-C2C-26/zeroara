@@ -111,15 +111,109 @@ Everything the SDK does is `window.postMessage` plus one URL parameter, so any s
 
 A claim is always `field ≥ value`. Zeroara's Groth16 circuit proves `witness ≥ threshold` over a Poseidon commitment, bound to a session digest of your requester name, purpose, threshold and nonce, so a proof made for one request cannot be replayed for another.
 
-## 5. What you can and cannot learn
+## 5. Desktop app flow: online verifier ↔ offline Zeroara
+
+For the real-world workflow the relying party runs a small **verifier API** and the user runs the **offline Zeroara desktop app** (or the web app as a fallback). The document never touches the network; only the outcome does.
+
+```
+Website ──POST /api/verify/init──▶ Verifier API ──{requestId, nonce, callbackUrl}──▶ Website
+Website ──zeroara://verify?request=…──▶ OS ──▶ Zeroara app (offline: read → burn → prove → seal)
+Zeroara app ──user authorizes──▶ POST callbackUrl {status, proof, seal, hashes}
+Verifier API ──verifies nonce, proof, threshold, seal, hash──▶ status VERIFIED/FAILED
+Website ◀──SSE / polling GET /api/verify/status/:id──
+```
+
+### 5.1 With the SDK
+
+```html
+<script src="https://zeroara.vercel.app/sdk/zeroara.js"></script>
+<div id="verify"></div>
+<script>
+  Zeroara.mount('#verify', {
+    mode: 'desktop',
+    api: 'https://api.your-site.example',   // your deployment of server/verifier-api.mjs
+    document: 'aadhaar',
+    claim: { field: 'Age', op: '>=', value: 18, unit: 'years' },
+    requester: 'Aegis Rentals',
+    purpose: 'Renters must be 18 or older',
+    wantRedactedPdf: true,
+    onResult: (r) => console.log(r.ok, r.status, r.verification),
+  });
+</script>
+```
+
+`Zeroara.verify({ mode: 'desktop', api, … })` does the same without the button: it calls `init`, opens `zeroara://…`, watches the session (server-sent events, polling fallback) and resolves when the API records a final status. If the app does not open, the web app opens as an overlay after `fallbackAfterMs` (or your `onFallback` callback decides). The result's `transport` says which path was used.
+
+### 5.2 The verifier API
+
+`server/verifier-api.mjs` is a dependency-free Node reference implementation (see `server/README.md`). Port it to any stack: the only cryptography needed is SHA-256 and a Groth16 verifier (snarkjs, or any bn128 Groth16 verifier) with `public/zk/verification_key.json`. On the callback it checks, in order:
+
+1. the session exists, is `PENDING` and not expired; `requestId` and `nonce` match (replay protection);
+2. `document` matches; for a claim, the receipt is `PROOF_BACKED` and carries a proof;
+3. `groth16.verify(vkey, publicSignals, proof)` is true; `publicSignals[0]` (the proven threshold) ≥ the requested value and equals the receipt's threshold; `publicSignals[1]` equals the receipt's Poseidon commitment; the payload's proof equals the sealed proof;
+4. the master audit seal recomputes from the receipt (`SHA-256("zeroara:seal:v1:doc:" ‖ H(redacted) ‖ ":bbox:" ‖ boxes ‖ ":commit:" ‖ C ‖ ":proof:" ‖ SHA-256(proof JSON))`);
+5. `redactedDocumentSha256` matches the receipt and, if attached, the PDF hashes to it.
+
+### 5.3 Request payload (online → offline)
+
+```json
+{
+  "version": 1,
+  "requestId": "req_9f8c12a4b7e1",
+  "requester": "Aegis Car Rentals",
+  "purpose": "Verify driver is at least 18 years old",
+  "document": "aadhaar",
+  "claim": { "field": "Age", "op": ">=", "value": 18, "unit": "years" },
+  "nonce": "0x4b7e19a82f30…",
+  "issuedAt": "2026-09-07T09:40:00Z",
+  "expiresAt": "2026-09-07T09:55:00Z",
+  "callbackUrl": "https://api.aegisrentals.com/api/verify/callback",
+  "wantRedactedPdf": true
+}
+```
+
+`callbackUrl` must be `https:` (plain `http:` is accepted only for loopback hosts).
+
+### 5.4 Result payload (offline → online), POSTed to `callbackUrl`
+
+```json
+{
+  "version": 1,
+  "requestId": "req_9f8c12a4b7e1",
+  "nonce": "0x4b7e19a82f30…",
+  "status": "VERIFIED",
+  "predicateSatisfied": true,
+  "document": "aadhaar",
+  "claim": { "field": "Age", "op": ">=", "value": 18, "unit": "years" },
+  "redactionMode": "PROOF_BACKED",
+  "proof": { "pi_a": ["…"], "pi_b": [["…"]], "pi_c": ["…"], "protocol": "groth16", "curve": "bn128", "publicSignals": ["18", "1234…"] },
+  "commitment": "1234…",
+  "masterAuditSeal": "8fbc7301e…",
+  "redactedDocumentSha256": "e3b0c442…",
+  "redactedPdfBase64": "JVBERi0xLjQK…",
+  "receipt": { "…audit package with the blinding salt and the original file's hash/name removed…" },
+  "signedTimestamp": "2026-09-07T09:58:00Z"
+}
+```
+
+`status` is `FAILED` (with `reason`) when the document does not satisfy the claim and `DECLINED` when the user refuses; those payloads carry no proof, seal or document. Never included: original bytes, any value under a black box, OCR text, the blinding salt. `signedTimestamp` is the issue time; a device signature over the payload is reserved for the hardware-attestation layer.
+
+### 5.5 In the app
+
+A request launches the **request flow** (no sandbox controls): 1 review the request · 2 provide the document (real file only) · 3 local processing (OCR → burn → prove → seal, no clicks) · 4 privacy & consent (redacted preview, exactly what will be sent, what stays) · 5 authorize & release. Declining at any point sends `DECLINED` to the callback (and `zeroara:cancel` to a browser opener).
+
+## 6. What you can and cannot learn
 
 You receive the redacted PDF and the receipt. From them you can verify the claim, the burned geometry and the seal. You cannot recover the burned text, the exact value or the person's identity: the PDF is a flat raster with no text layer, and the proof reveals only "the condition holds".
 
-## 6. Running it locally
+## 7. Running it locally
 
 ```sh
 npm run dev            # Zeroara on http://localhost:1420
-open http://localhost:1420/demo/index.html   # the playground uses /sdk/zeroara.js from the same origin
+npm run verifier       # reference verifier API on http://localhost:8787
+open http://localhost:1420/demo/index.html   # playground; pick "desktop app via verifier API" to exercise the online↔offline flow
 ```
+
+Without the desktop app installed the playground's desktop mode falls back to the web app after a few seconds; the API path (init → callback → status) is identical. Desktop packaging and `zeroara://` registration are described in `docs/DESKTOP.md`.
 
 For the best OCR on Aadhaar photos start the local Surya sidecar (`sidecar/run.sh`); the app falls back to in-browser Tesseract otherwise.

@@ -69,8 +69,37 @@ fn tamper_bundle_test(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // A second launch (Windows/Linux deliver zeroara:// links by starting the
+    // executable again) is forwarded to the running window; the "deep-link"
+    // feature of the single-instance plugin hands the URL to the deep-link
+    // plugin, which raises `onOpenUrl` in the webview.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            // Installed bundles register the scheme through the OS. Development
+            // builds are not installed, so register at runtime where supported.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_sample_documents,
             get_enclave_diagnostics,

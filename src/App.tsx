@@ -61,23 +61,27 @@ import {
 import { Accordion, Drawer, Select, StatusBadge, KV, HashBlock, StepItem } from './components/ui';
 import { VerifierDemoSite, type VerifierResult } from './components/VerifierDemoSite';
 import { TourOverlay, type TourSnapshot } from './components/TourOverlay';
+import { RequestFlow, type RequestScreen, type ReleaseState, type ReleaseInfo, type Outcome } from './components/RequestFlow';
 import {
   parseZeroaraRequest,
   decodeRequestParam,
   resolveRequest,
-  bytesToBase64,
   makeNonceHex,
   makeRequestId,
+  buildVerificationResult,
   type ActiveVerifierRequest,
   type ZeroaraRequest,
   type RequestSource,
   type ZeroaraResultMessage,
+  type VerificationStatus,
 } from './integration/protocol';
+import { installDeepLinkListener } from './integration/deepLink';
 import {
   VerifierPortalView,
   HardwareEnclaveView,
   TransportProtocolView,
   runEnterpriseAudit,
+  dispatchVerificationResult,
 } from './layers';
 import { SCENARIOS, getScenario, isProofBacked } from './core/scenarios';
 
@@ -249,7 +253,15 @@ export function App() {
   const [masterSeal, setMasterSeal] = useState<MasterSealResult | null>(null);
   const [auditPackage, setAuditPackage] = useState<ZeroaraAuditPackage | null>(null);
   // Progressive disclosure + external verifier handshake
-  const [activeView, setActiveView] = useState<'workspace' | 'demo'>('workspace');
+  const [activeView, setActiveView] = useState<'workspace' | 'demo' | 'request'>('workspace');
+  // Authenticator-style external request mode (Online verifier <-> offline app)
+  const [requestScreen, setRequestScreen] = useState<RequestScreen>('review');
+  const [releaseState, setReleaseState] = useState<ReleaseState>('idle');
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
+  const [includePdf, setIncludePdf] = useState(false);
+  const [processingError, setProcessingError] = useState<string | null>(null);
+  const [extractionError, setExtractionError] = useState<string | null>(null);
+  const autoStepRef = useRef('');
   const [verifierRequest, setVerifierRequest] = useState<ActiveVerifierRequest | null>(null);
   const [deliveryState, setDeliveryState] = useState<'idle' | 'sent' | 'downloaded'>('idle');
   const verifierRequestRef = useRef<ActiveVerifierRequest | null>(null);
@@ -348,6 +360,7 @@ export function App() {
 
     const runExtraction = async () => {
       setOcrRunning(true);
+      setExtractionError(null);
 
       try {
         const result = await extractDocumentSpatial(
@@ -401,6 +414,7 @@ export function App() {
           setPdfLocked({ incorrect: err.incorrect });
         } else {
           console.error('Document spatial processing error:', err);
+          if (!isCancelled) setExtractionError((err as Error)?.message || 'The document could not be read.');
         }
       } finally {
         if (!isCancelled) {
@@ -680,7 +694,7 @@ export function App() {
     const mimeType = resolveUploadMimeType(file);
     if (!mimeType) {
       setUploadError('Choose a PDF or an image file (PNG, JPEG, WebP, GIF, BMP, or AVIF).');
-      return;
+      return false;
     }
 
     setUploadError(null);
@@ -709,6 +723,7 @@ export function App() {
     invalidateDownstreamState('New document uploaded — previous proofs and seals cleared.');
     setViewMode('ORIGINAL');
     setStage(1);
+    return true;
   };
 
   // Ingest synthesized authentic sample PDF document
@@ -752,14 +767,23 @@ export function App() {
     const viewParam = params.get('view')?.toUpperCase();
     if (viewParam === 'VERIFIER') setStage(6);
     else if (viewParam === 'DEMO') setActiveView('demo');
+    else if (viewParam === 'ENCLAVE') setStage(7);
+    else if (viewParam === 'TRANSPORT') setStage(8);
 
+    // A verification request can arrive as ?request=<base64url> (web / popup)
+    // or as a zeroara:// deep link delivered by the OS (Tauri desktop shell).
     const requestParam = params.get('request');
     if (requestParam) {
       const req = decodeRequestParam(requestParam);
       if (req) applyExternalRequestRef.current(req, 'external', req.replyOrigin);
     }
-    else if (viewParam === 'ENCLAVE') setStage(7);
-    else if (viewParam === 'TRANSPORT') setStage(8);
+    const unlistenDeepLink = installDeepLinkListener((req) => applyExternalRequestRef.current(req, 'external', undefined));
+
+    // Test hook (development builds only): lets end-to-end tests fetch the
+    // specimen documents as files. Never part of the product flow.
+    if (import.meta.env.DEV) {
+      (window as unknown as { __zeroaraDev?: unknown }).__zeroaraDev = { generateSampleAadhaarPng, generateSamplePdfBytes };
+    }
 
     const stageParam = params.get('stage') || params.get('phase');
     if (stageParam) {
@@ -778,6 +802,7 @@ export function App() {
         }
       });
     }
+    return () => unlistenDeepLink();
   }, []);
 
   // Draw real spatial bounding boxes over canvas
@@ -1008,7 +1033,13 @@ export function App() {
     setVerifierRequest(active);
     setVerifierResult(null);
     setDeliveryState('idle');
-    setActiveView('workspace');
+    setRequestScreen('review');
+    setReleaseState('idle');
+    setReleaseInfo(null);
+    setProcessingError(null);
+    setIncludePdf(active.wantRedactedPdf);
+    autoStepRef.current = '';
+    setActiveView(source === 'external' ? 'request' : 'workspace');
   };
   applyExternalRequestRef.current = applyExternalRequest;
 
@@ -1037,46 +1068,134 @@ export function App() {
     return window.parent !== window ? window.parent : null;
   };
 
-  // Hand the bundle back. The relying party receives ONLY the flattened
-  // redacted PDF and the audit package (receipt) — never the original bytes.
+  // Workspace shortcut for an external request: review what leaves the device
+  // before anything is sent. The in-app demo keeps its direct hand-back.
   const returnToVerifier = () => {
     if (!verifierRequest || !auditPackage || !redactionResult) return;
-    const result: VerifierResult = {
-      pkg: auditPackage,
-      pdfBytes: redactionResult.redactedPdfBytes,
-      fileName: redactedFileName,
-      receivedAt: new Date().toISOString(),
-    };
     if (verifierRequest.source === 'external') {
-      const target = replyTarget();
-      const origin = verifierRequest.replyOrigin;
-      if (target && origin) {
-        const msg: ZeroaraResultMessage = {
-          type: 'zeroara:result',
-          version: 1,
-          requestId: verifierRequest.id,
-          bundle: auditPackage,
-          redactedPdfBase64: bytesToBase64(redactionResult.redactedPdfBytes),
-          fileName: redactedFileName,
-          deliveredAt: result.receivedAt,
-        };
-        target.postMessage(msg, origin);
-        setDeliveryState('sent');
-      } else {
-        handleDownloadAuditPackage();
-        downloadFile(redactionResult.redactedPdfBytes, redactedFileName, 'application/pdf');
-        setDeliveryState('downloaded');
-      }
-      setVerifierResult(result);
+      setRequestScreen('consent');
+      setActiveView('request');
       return;
     }
-    setVerifierResult(result);
+    setVerifierResult({ pkg: auditPackage, pdfBytes: redactionResult.redactedPdfBytes, fileName: redactedFileName, receivedAt: new Date().toISOString() });
     setActiveView('demo');
   };
 
+  // Release the outcome. Channel, in order: the request's callbackUrl (online
+  // verifier), the window that opened Zeroara (postMessage), or a download.
+  // Only the payload built by buildVerificationResult ever leaves the device:
+  // no original bytes, no values, no blinding salt.
+  const releaseResult = async () => {
+    if (!verifierRequest) return;
+    const claimRequired = !!verifierRequest.claimSpec && scenarioProofBacked;
+    const satisfied = !claimRequired || !!(proofResult && proofVerified);
+    const status: VerificationStatus = satisfied ? 'VERIFIED' : 'FAILED';
+    if (status === 'VERIFIED' && (!auditPackage || !redactionResult)) return;
+
+    setRequestScreen('release');
+    setReleaseState('sending');
+    setReleaseInfo(null);
+    const wantPdf = includePdf && verifierRequest.wantRedactedPdf;
+    const payload = buildVerificationResult({
+      request: verifierRequest,
+      status,
+      pkg: auditPackage,
+      redactedPdf: redactionResult?.redactedPdfBytes ?? null,
+      includePdf: wantPdf,
+      reason: satisfied ? undefined : `${verifierRequest.claim} is not satisfied by the document.`,
+    });
+    const target = replyTarget();
+    const origin = verifierRequest.replyOrigin;
+    const deliveredAt = payload.signedTimestamp;
+
+    if (verifierRequest.callbackUrl) {
+      const res = await dispatchVerificationResult(verifierRequest.callbackUrl, payload);
+      if (res.ok) {
+        setReleaseState('sent');
+        setReleaseInfo({ ok: true, channel: 'callback', status: res.status ?? status, message: res.message });
+        setDeliveryState('sent');
+        if (target && origin) target.postMessage({ type: 'zeroara:delivered', version: 1, requestId: verifierRequest.id, status: res.status ?? status }, origin);
+      } else {
+        setReleaseState('failed');
+        setReleaseInfo({ ok: false, channel: 'callback', status: res.status, error: res.error, message: res.message, reasons: res.reasons });
+      }
+    } else if (target && origin) {
+      const msg: ZeroaraResultMessage = {
+        type: 'zeroara:result',
+        version: 1,
+        requestId: verifierRequest.id,
+        bundle: payload.receipt ?? null,
+        redactedPdfBase64: payload.redactedPdfBase64 ?? '',
+        fileName: redactedFileName,
+        deliveredAt,
+        verification: payload,
+      };
+      target.postMessage(msg, origin);
+      setReleaseState('sent');
+      setReleaseInfo({ ok: true, channel: 'message', status });
+      setDeliveryState('sent');
+    } else {
+      downloadFile(new TextEncoder().encode(JSON.stringify(payload, null, 2)), `Zeroara_Result_${verifierRequest.id}.json`, 'application/json');
+      if (status === 'VERIFIED' && redactionResult && wantPdf) downloadFile(redactionResult.redactedPdfBytes, redactedFileName, 'application/pdf');
+      setReleaseState('sent');
+      setReleaseInfo({ ok: true, channel: 'download', status });
+      setDeliveryState('downloaded');
+    }
+    if (auditPackage && redactionResult) {
+      setVerifierResult({ pkg: auditPackage, pdfBytes: redactionResult.redactedPdfBytes, fileName: redactedFileName, receivedAt: deliveredAt });
+    }
+  };
+
+  const acceptRequest = () => {
+    if (!verifierRequest) return;
+    if (verifierRequest.expiresAt && Date.parse(verifierRequest.expiresAt) < Date.now()) return;
+    setRequestScreen('ingest');
+  };
+
+  const declineRequest = () => {
+    if (!verifierRequest) return;
+    const target = replyTarget();
+    const origin = verifierRequest.replyOrigin;
+    if (verifierRequest.callbackUrl) {
+      void dispatchVerificationResult(verifierRequest.callbackUrl, buildVerificationResult({ request: verifierRequest, status: 'DECLINED', reason: 'Declined by the user.' }));
+    }
+    if (target && origin) target.postMessage({ type: 'zeroara:cancel', version: 1, requestId: verifierRequest.id }, origin);
+    setReleaseState('declined');
+    setReleaseInfo(null);
+    setRequestScreen('release');
+  };
+
+  const handleRequestFile = async (file: File) => {
+    setProcessingError(null);
+    autoStepRef.current = '';
+    const ok = await handleFileUpload(file);
+    if (ok) setRequestScreen('processing');
+  };
+
+  // Leave request mode without signalling anything further to the requester.
+  const finishRequest = () => {
+    setVerifierRequest(null);
+    setVerifierResult(null);
+    setDeliveryState('idle');
+    setRequestScreen('review');
+    setReleaseState('idle');
+    setReleaseInfo(null);
+    setProcessingError(null);
+    clearDocument();
+    setActiveView('workspace');
+  };
+
   const cancelRequest = () => {
-    if (verifierRequest?.source === 'external' && verifierRequest.replyOrigin) {
-      replyTarget()?.postMessage({ type: 'zeroara:cancel', version: 1, requestId: verifierRequest.id }, verifierRequest.replyOrigin);
+    if (activeView === 'request') {
+      if (releaseState === 'sent' || releaseState === 'declined') finishRequest();
+      else declineRequest();
+      return;
+    }
+    if (verifierRequest?.source === 'external') {
+      if (verifierRequest.callbackUrl) {
+        void dispatchVerificationResult(verifierRequest.callbackUrl, buildVerificationResult({ request: verifierRequest, status: 'DECLINED', reason: 'Declined by the user.' }));
+      }
+      if (verifierRequest.replyOrigin) replyTarget()?.postMessage({ type: 'zeroara:cancel', version: 1, requestId: verifierRequest.id }, verifierRequest.replyOrigin);
     }
     setVerifierRequest(null);
     setVerifierResult(null);
@@ -1245,8 +1364,64 @@ export function App() {
   if (auditPackage && verifierRequest && stage < 5 && deliveryState === 'idle')
     secondaryActions.push({ label: external ? `Send proof to ${verifierRequest.requester}` : `Return to ${verifierRequest.requester}`, icon: external ? <Send size={14} /> : <ExternalLink size={14} />, onClick: returnToVerifier });
 
+  // ---- Request mode: run the whole pipeline without clicks, then ask for consent.
+  const claimRequired = !!verifierRequest?.claimSpec && scenarioProofBacked;
+  const ocrDone = !!doc && !ocrRunning && !!ocrTelemetry;
+  const predicateFailed = claimRequired && !!witnessTarget && witnessTarget.satisfiesThreshold === false;
+  const requestOutcome: Outcome | null = !doc ? null : predicateFailed ? 'FAILED' : auditPackage && (!claimRequired || !!(proofResult && proofVerified)) ? 'VERIFIED' : null;
+  const requestExpired = !!verifierRequest?.expiresAt && Date.parse(verifierRequest.expiresAt) < Date.now();
+
+  useEffect(() => {
+    if (activeView !== 'request' || requestScreen !== 'processing' || !doc || !verifierRequest) return;
+    if (ocrRunning || isBurning || isProving || isSealing || pdfLocked || processingError) return;
+    if (extractionError) {
+      setProcessingError(`The document could not be read: ${extractionError}`);
+      return;
+    }
+    if (!ocrTelemetry) return; // OCR still running or not started
+    const witness = detectedFields.find((f) => f.action === 'PROVE_AND_BURN' && typeof f.numericValue === 'number');
+    const burnable = detectedFields.filter((f) => f.action !== 'DETECT_ONLY');
+    if (burnable.length === 0) {
+      setProcessingError('No sensitive fields could be read on this document. Use a sharper, well-lit image of the whole document.');
+      return;
+    }
+    if (claimRequired && !witness) {
+      setProcessingError(`The value needed for “${verifierRequest.claim}” could not be read from this document. Try a clearer scan.`);
+      return;
+    }
+    if (claimRequired && witness && witness.satisfiesThreshold === false) {
+      setRequestScreen('consent'); // outcome FAILED: nothing else to compute
+      return;
+    }
+    const key = (step: string) => `${doc.hashHex}:${step}`;
+    const fire = (step: string, fn: () => void) => {
+      if (autoStepRef.current !== key(step)) {
+        autoStepRef.current = key(step);
+        fn();
+      }
+    };
+    if (!redactionResult) {
+      fire('burn', () => void executePixelBurn());
+      return;
+    }
+    if (claimRequired && !proofResult) {
+      if (proverError) {
+        setProcessingError(`Proof generation failed: ${proverError}`);
+        return;
+      }
+      fire('prove', () => void executeZkProof());
+      return;
+    }
+    if (!auditPackage) {
+      fire('seal', () => void executeMasterSeal());
+      return;
+    }
+    setRequestScreen('consent');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView, requestScreen, doc, verifierRequest, ocrRunning, isBurning, isProving, isSealing, pdfLocked, processingError, extractionError, ocrTelemetry, detectedFields, redactionResult, proofResult, proverError, auditPackage, claimRequired]);
+
   const tourSnapshot: TourSnapshot = {
-    view: activeView,
+    view: activeView === 'request' ? 'workspace' : activeView,
     stage,
     hasRequest: !!verifierRequest,
     hasDoc: !!doc,
@@ -1294,6 +1469,7 @@ export function App() {
               )}
             </div>
 
+            {activeView !== 'request' && (
             <div className="neu-nav-track" role="tablist" aria-label="Views">
               <button type="button" role="tab" aria-selected={activeView === 'workspace'} className={`neu-nav-btn ${activeView === 'workspace' ? 'active' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} onClick={() => setActiveView('workspace')} data-tour="nav-workspace">
                 <LayoutDashboard size={14} />
@@ -1309,7 +1485,9 @@ export function App() {
                 )}
               </button>
             </div>
+            )}
 
+            {activeView !== 'request' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               {doc ? (
                 <button type="button" className="neu-btn-secondary" style={{ fontSize: '0.78rem', padding: '7px 14px', gap: '6px' }} onClick={clearDocument}>
@@ -1322,7 +1500,50 @@ export function App() {
                 </button>
               )}
             </div>
+            )}
           </div>
+
+          {/* External verification request: authenticator-style flow (offline app side) */}
+          {activeView === 'request' && verifierRequest && (
+            <RequestFlow
+              request={verifierRequest}
+              scenarioLabel={scenario.label}
+              screen={requestScreen}
+              expired={requestExpired}
+              doc={doc ? { fileName: doc.fileName, sizeBytes: doc.fileSizeBytes } : null}
+              uploadError={uploadError}
+              pdfLocked={pdfLocked}
+              pdfPasswordDraft={pdfPasswordDraft}
+              onPdfPasswordDraft={setPdfPasswordDraft}
+              onUnlockPdf={() => setPdfPassword(pdfPasswordDraft)}
+              pipeline={{
+                ocrRunning,
+                ocrDone,
+                targets: detectedFields.length,
+                burned: !!redactionResult,
+                proving: isProving,
+                proofDone: !!(proofResult && proofVerified),
+                proofRequired: claimRequired,
+                sealed: !!auditPackage,
+                error: processingError,
+              }}
+              burnedPreviewUrl={requestOutcome === 'VERIFIED' ? redactionResult?.flattenedPngDataUrl ?? null : null}
+              burnedFields={Array.from(new Set(detectedFields.filter((f) => f.action !== 'DETECT_ONLY').map((f) => f.label)))}
+              outcome={requestOutcome}
+              predicateText={verifierRequest.claim}
+              includePdf={includePdf}
+              onIncludePdf={setIncludePdf}
+              release={{ state: releaseState, info: releaseInfo }}
+              canCloseWindow={hasOpener}
+              onAccept={acceptRequest}
+              onDecline={declineRequest}
+              onFile={(f) => void handleRequestFile(f)}
+              onAuthorize={() => void releaseResult()}
+              onRetrySend={() => void releaseResult()}
+              onDone={finishRequest}
+              onCloseWindow={() => window.close()}
+            />
+          )}
 
           {/* Third-party verifier demo ("Verify with Zeroara") */}
           {activeView === 'demo' && (

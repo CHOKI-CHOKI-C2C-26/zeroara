@@ -32,6 +32,12 @@ export interface ZeroaraRequest {
   /** Origin that should receive the result when the request arrived via URL. */
   replyOrigin?: string;
   issuedAt?: string;
+  /** Online verifier endpoint that receives the result (desktop / deep-link flow). */
+  callbackUrl?: string;
+  /** Ask the user to include the flattened redacted PDF in the result. */
+  wantRedactedPdf?: boolean;
+  /** ISO time after which the verifier will refuse the result. */
+  expiresAt?: string;
 }
 
 export type RequestSource = 'demo' | 'external';
@@ -49,24 +55,48 @@ export interface ActiveVerifierRequest {
   nonce: string;
   issuedAt: string;
   replyOrigin?: string;
+  callbackUrl?: string;
+  /** Host shown to the user: the callback's host, else the reply origin's host. */
+  requesterOrigin?: string;
+  wantRedactedPdf: boolean;
+  expiresAt?: string;
+  /** The claim as requested (null for seal-only document types). */
+  claimSpec: ZeroaraClaim | null;
 }
 
 export interface ZeroaraResultMessage {
   type: 'zeroara:result';
   version: 1;
   requestId: string;
-  bundle: ZeroaraAuditPackage;
+  /** Sanitized receipt; null when the claim was not satisfied. */
+  bundle: ZeroaraAuditPackage | null;
   redactedPdfBase64: string;
   fileName: string;
   deliveredAt: string;
+  /** The same payload an online verifier would receive on its callback. */
+  verification: ZeroaraVerificationResult;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
 
+/** A callback must be https, or plain http on a loopback host (local development). */
+export function isAllowedCallbackUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const u = new URL(value);
+    if (u.protocol === 'https:') return true;
+    if (u.protocol !== 'http:') return false;
+    const h = u.hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost');
+  } catch {
+    return false;
+  }
+}
+
 /** Validate an untrusted wire request. Returns null for anything malformed. */
 export function parseZeroaraRequest(raw: unknown): ZeroaraRequest | null {
   if (!isRecord(raw)) return null;
-  const { requestId, requester, document, nonce, purpose, claim, replyOrigin, issuedAt } = raw;
+  const { requestId, requester, document, nonce, purpose, claim, replyOrigin, issuedAt, callbackUrl, wantRedactedPdf, expiresAt } = raw;
   if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{4,64}$/.test(requestId)) return null;
   if (typeof document !== 'string' || !SCENARIOS.some((s) => s.id === document)) return null;
   if (typeof nonce !== 'string' || nonce.length < 8 || nonce.length > 130) return null;
@@ -94,6 +124,9 @@ export function parseZeroaraRequest(raw: unknown): ZeroaraRequest | null {
     nonce,
     replyOrigin: typeof replyOrigin === 'string' && /^https?:\/\/[^/]+$/.test(replyOrigin) ? replyOrigin : undefined,
     issuedAt: typeof issuedAt === 'string' ? issuedAt : undefined,
+    callbackUrl: isAllowedCallbackUrl(callbackUrl) ? callbackUrl : undefined,
+    wantRedactedPdf: wantRedactedPdf === true,
+    expiresAt: typeof expiresAt === 'string' && !Number.isNaN(Date.parse(expiresAt)) ? expiresAt : undefined,
   };
 }
 
@@ -119,7 +152,113 @@ export function resolveRequest(req: ZeroaraRequest, source: RequestSource, reply
     nonce: req.nonce,
     issuedAt: req.issuedAt || new Date().toISOString(),
     replyOrigin,
+    callbackUrl: req.callbackUrl,
+    requesterOrigin: hostOf(req.callbackUrl) ?? hostOf(replyOrigin),
+    wantRedactedPdf: req.wantRedactedPdf === true,
+    expiresAt: req.expiresAt,
+    claimSpec: proofBacked && req.claim ? req.claim : null,
   };
+}
+
+function hostOf(url?: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Result payload (offline app -> online verifier)                            */
+/* ------------------------------------------------------------------------- */
+
+export type VerificationStatus = 'VERIFIED' | 'FAILED' | 'DECLINED';
+
+export interface ZeroaraVerificationResult {
+  version: 1;
+  requestId: string;
+  nonce: string;
+  status: VerificationStatus;
+  predicateSatisfied: boolean;
+  /** Scenario id the document was processed as. */
+  document: string;
+  claim: ZeroaraClaim | null;
+  redactionMode?: 'PROOF_BACKED' | 'SEAL_ONLY';
+  proof?: {
+    pi_a: string[];
+    pi_b: string[][];
+    pi_c: string[];
+    protocol: string;
+    curve: string;
+    /** [thresholdValue, poseidonCommitment] for the income_threshold circuit. */
+    publicSignals: string[];
+  };
+  commitment?: string;
+  masterAuditSeal?: string;
+  redactedDocumentSha256?: string;
+  /** Only when the requester asked for it and the user consented. */
+  redactedPdfBase64?: string;
+  /** The audit package with every secret stripped (see sanitizeReceipt). */
+  receipt?: ZeroaraAuditPackage;
+  reason?: string;
+  /** Issued-at time. A device signature over this payload is reserved for the hardware-attestation layer. */
+  signedTimestamp: string;
+}
+
+/**
+ * Strip everything a relying party must never learn from an audit package:
+ * the blinding salt (with it, the committed value can be brute-forced), the
+ * original file's hash and name. The master seal does not cover these fields,
+ * so the sanitized receipt still verifies exactly like the original.
+ */
+export function sanitizeReceipt(pkg: ZeroaraAuditPackage): ZeroaraAuditPackage {
+  const copy: ZeroaraAuditPackage = JSON.parse(JSON.stringify(pkg));
+  copy.sourceDocument = {
+    fileName: 'document (name withheld)',
+    fileSizeBytes: pkg.sourceDocument.fileSizeBytes,
+    mimeType: pkg.sourceDocument.mimeType,
+    preimageSha256: '',
+  };
+  if (copy.zeroKnowledgeProof) copy.zeroKnowledgeProof.blindingSalt = '';
+  return copy;
+}
+
+export function buildVerificationResult(args: {
+  request: ActiveVerifierRequest;
+  status: VerificationStatus;
+  pkg?: ZeroaraAuditPackage | null;
+  redactedPdf?: Uint8Array | null;
+  includePdf?: boolean;
+  reason?: string;
+}): ZeroaraVerificationResult {
+  const { request, status, pkg, redactedPdf, includePdf, reason } = args;
+  const base: ZeroaraVerificationResult = {
+    version: 1,
+    requestId: request.id,
+    nonce: request.nonce,
+    status,
+    predicateSatisfied: false,
+    document: request.scenarioId,
+    claim: request.claimSpec,
+    signedTimestamp: new Date().toISOString(),
+  };
+  if (reason) base.reason = reason;
+  if (status !== 'VERIFIED' || !pkg) return base;
+
+  const receipt = sanitizeReceipt(pkg);
+  const zk = receipt.zeroKnowledgeProof;
+  base.predicateSatisfied = request.claimSpec ? !!zk?.verified : true;
+  base.redactionMode = receipt.redactionMode;
+  if (zk) {
+    base.proof = { ...zk.proof, publicSignals: zk.publicSignals };
+    base.commitment = zk.poseidonCommitment;
+  }
+  base.masterAuditSeal = receipt.masterAuditSeal.sealHex;
+  base.redactedDocumentSha256 = receipt.sanitizedDocument.preimageSha256;
+  base.receipt = receipt;
+  if (includePdf && redactedPdf && redactedPdf.length > 0) base.redactedPdfBase64 = bytesToBase64(redactedPdf);
+  return base;
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
