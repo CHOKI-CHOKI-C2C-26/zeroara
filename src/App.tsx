@@ -76,6 +76,7 @@ import {
   type VerificationStatus,
 } from './integration/protocol';
 import { installDeepLinkListener } from './integration/deepLink';
+import { navigate } from './pages/router';
 import {
   VerifierPortalView,
   HardwareEnclaveView,
@@ -1451,8 +1452,18 @@ export function App() {
           {/* Top bar: brand, egress monitor, view switch, active request, document action */}
           <div className="neu-card" style={{ padding: '10px 18px', borderRadius: '20px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-              <img src="/logo.png" alt="Zeroara Logo" style={{ width: '30px', height: '30px', objectFit: 'contain', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(234, 88, 12, 0.3))' }} />
-              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>ZEROARA</span>
+              <a
+                href="/"
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigate('/');
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none' }}
+                aria-label="Zeroara home"
+              >
+                <img src="/logo.png" alt="Zeroara Logo" style={{ width: '30px', height: '30px', objectFit: 'contain', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(234, 88, 12, 0.3))' }} />
+                <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>ZEROARA</span>
+              </a>
               <span className="neu-severed-pill">
                 <WifiOff size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
                 {suryaStatus.online ? 'EGRESS: 0 KB · OCR ON 127.0.0.1' : 'EGRESS: 0 KB · SEVERED'}
