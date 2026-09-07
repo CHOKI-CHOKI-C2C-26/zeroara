@@ -1,41 +1,131 @@
-import { useEffect, useState } from 'react';
-import { ArrowRight, Copy, Check, KeyRound, ScanLine, Flame, Cpu, Fingerprint, ExternalLink, ChevronDown, X } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { ArrowRight, Copy, Check, Terminal, FileText, X } from 'lucide-react';
 import { navigate } from './router';
 
-/* Landing page: intro word, hero with two actions, how it works, integration. */
+/* Landing page: intro word, hero with Spline interactive element, educational protocol breakdown, integration. */
 
 let introPlayed = false; // play the intro once per page load, not on every route change
 
-const STEPS: { icon: React.ReactNode; title: string; text: string }[] = [
-  { icon: <KeyRound size={15} />, title: 'Ask', text: 'Your site states the claim — say, Age ≥ 18 — with a one-time nonce.' },
-  { icon: <ScanLine size={15} />, title: 'Read locally', text: 'Zeroara opens on the user’s device and reads the document there. Nothing is uploaded.' },
-  { icon: <Flame size={15} />, title: 'Burn', text: 'Every sensitive field is blacked out in the pixels. The PDF is flattened; no text layer survives.' },
-  { icon: <Cpu size={15} />, title: 'Prove', text: 'A Groth16 zero-knowledge proof shows the claim holds without revealing the value.' },
-  { icon: <Fingerprint size={15} />, title: 'Seal & return', text: 'One seal binds document, boxes, commitment and proof. Your site gets the outcome, the proof, the seal and a redacted PDF.' },
-];
+const MASTER_PROMPT = `Integrate Zeroara into this website. Zeroara is a 100% client-side provable document redaction and zero-knowledge verification engine that verifies claims without receiving or exposing raw documents.
 
-const DOCUMENTS: { id: string; claim: string | null }[] = [
-  { id: 'aadhaar', claim: 'age' },
-  { id: 'income_accredited', claim: 'income' },
-  { id: 'salary_slip', claim: 'net pay' },
-  { id: 'bank_statement', claim: 'balance' },
-  { id: 'tax_form', claim: 'declared income' },
-  { id: 'generic_financial', claim: 'amount' },
-  { id: 'pan', claim: null },
-  { id: 'college_id', claim: null },
-  { id: 'generic_id', claim: null },
-];
+### 1. Script Tag Inclusion
+Add the Zeroara client SDK to your page or layout:
+<script src="https://zeroara.vercel.app/sdk/zeroara.js"></script>
 
-const SPECIMENS: { file: string; label: string }[] = [
-  { file: 'Aadhaar_SPECIMEN_sample.png', label: 'Aadhaar card' },
-  { file: 'PAN_Card_SPECIMEN_sample.png', label: 'PAN card' },
-  { file: 'College_ID_SPECIMEN_sample.png', label: 'College ID' },
-  { file: 'Identity_Card_SPECIMEN_sample.png', label: 'Generic ID' },
-  { file: 'Bank_Statement_SPECIMEN_sample.pdf', label: 'Bank statement' },
-  { file: 'Salary_Slip_SPECIMEN_sample.pdf', label: 'Salary slip' },
-  { file: 'Form16_SPECIMEN_sample.pdf', label: 'Tax form (Form 16)' },
-  { file: 'Invoice_SPECIMEN_sample.pdf', label: 'Invoice (generic financial)' },
-  { file: 'Accredited_Investor_Verification_ApexLP.pdf', label: 'Income certificate' },
+If loading dynamically in a React / Next.js component:
+\`\`\`javascript
+await new Promise((resolve, reject) => {
+  if (window.Zeroara) return resolve();
+  const script = document.createElement('script');
+  script.src = 'https://zeroara.vercel.app/sdk/zeroara.js';
+  script.async = true;
+  script.onload = resolve;
+  script.onerror = reject;
+  document.head.appendChild(script);
+});
+\`\`\`
+
+### 2. Request Verification
+Call Zeroara.verify() from a user action (e.g. clicking a verification button):
+\`\`\`javascript
+const result = await window.Zeroara.verify({
+  document: 'aadhaar',                                         // 'aadhaar' | 'income_accredited' | 'salary_slip' | 'bank_statement' | 'tax_form'
+  claim: { field: 'Age', op: '>=', value: 18, unit: 'years' }, // what must hold
+  requester: 'Your Company Name',                               // shown to the user
+  purpose: 'Age verification for account activation',
+});
+
+if (result.ok) {
+  // Cryptographic audit package (receipt):
+  const auditBundle = result.bundle;
+  
+  // Flattened, burned PDF bytes (Uint8Array) with all PII permanently purged:
+  const redactedPdfBytes = result.redactedPdfBytes;
+
+  // Persist the proof & seal to your database or session:
+  await saveVerification({
+    requestId: auditBundle.enterpriseRequirement.requestId,
+    nonce: auditBundle.enterpriseRequirement.challengeNonce,
+    proof: auditBundle.zeroKnowledgeProof,
+    masterSeal: auditBundle.masterAuditSeal,
+    redactedDocSha256: auditBundle.redactedDocumentDigestSha256,
+  });
+} else {
+  console.warn('Verification incomplete or rejected:', result.error);
+}
+\`\`\`
+
+### 3. Client-Side Cryptographic Audit (Trust, then verify)
+Independently verify the audit package without server calls:
+\`\`\`javascript
+const report = await window.Zeroara.audit(result.bundle);
+if (report.overallValid) {
+  // All checks passed: Nonce match, Document digest, Geometry commitment, Groth16 ZK proof, Master Audit Seal
+  console.log('Zero-knowledge verification confirmed.');
+}
+\`\`\`
+
+### 4. Drop-In UI Mount (Alternative)
+To render a pre-styled "Verify with Zeroara" trigger button:
+\`\`\`javascript
+window.Zeroara.mount('#verify-btn-container', {
+  document: 'aadhaar',
+  claim: { field: 'Age', op: '>=', value: 18, unit: 'years' },
+  requester: 'Your Company Name',
+  purpose: 'Age verification',
+  onResult: (result) => {
+    if (result.ok) handleVerified(result.bundle);
+  },
+});
+\`\`\`
+
+### Security Rules:
+- Zero unredacted document data ever leaves the user's browser memory.
+- Always check that result.bundle.enterpriseRequirement.challengeNonce matches your session challenge to prevent replay attacks.`;
+
+interface ProtocolStage {
+  step: string;
+  title: string;
+  description: string;
+  math: string;
+}
+
+const PROTOCOL_STAGES: ProtocolStage[] = [
+  {
+    step: 'STAGE 01',
+    title: 'Challenge Formulation & Nonce Commitment',
+    description:
+      'The relying party specifies the inequality predicate P and issues an ephemeral, cryptographically secure random nonce to prevent replay attacks.',
+    math: 'Session Context = (r, RequesterID, v_threshold, τ)   where r ∈ {0, 1}²⁵⁶',
+  },
+  {
+    step: 'STAGE 02',
+    title: 'Client-Side Ingest & Preimage Digest',
+    description:
+      'The raw document bytes D are processed strictly in client-side memory. A SHA-256 root digest binds the original unaltered state before any redaction or extraction occurs.',
+    math: 'H_orig = SHA-256(Preimage) = SHA-256(D)   [0 network bytes transmitted]',
+  },
+  {
+    step: 'STAGE 03',
+    title: 'Physical Pixel Burning & Text Stream Stripping',
+    description:
+      'Target bounding boxes are permanently overwritten with black pixels in the raster matrix. All vector operators, text glyph layers, and metadata dictionaries are flattened and purged.',
+    math: 'I_redacted(x, y) = 0 if (x, y) ∈ ⋃ B_i, else I_orig(x, y)\nH_redacted = SHA-256(Flatten(I_redacted))',
+  },
+  {
+    step: 'STAGE 04',
+    title: 'Groth16 Zero-Knowledge Predicate Prover',
+    description:
+      'An arithmetic R1CS circuit over the BN254 / alt_bn128 curve evaluates the private scalar witness without disclosing it, yielding a succinct 3-element cryptographic proof.',
+    math: 'Circuit: { w - v_threshold - Δ = 0, Δ ∈ [0, 2ᵏ - 1] }\nProof π = (A ∈ 𝔾₁, B ∈ 𝔾₂, C ∈ 𝔾₁)\ne(A, B) = e(α, β) · e(x · γ, δ) · e(C, δ)',
+  },
+  {
+    step: 'STAGE 05',
+    title: 'Quad-Factor Master Audit Seal',
+    description:
+      'A deterministic master hash binds the original document preimage, redacted document, bounding box geometry, ZK proof, and session nonce into a single tamper-evident seal.',
+    math: 'σ_seal = SHA-256(H_orig ∥ H_redacted ∥ H_boxes ∥ H_proof ∥ r)',
+  },
 ];
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
@@ -64,7 +154,16 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
 export function Landing() {
   const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const [intro, setIntro] = useState<'playing' | 'done'>(introPlayed || reduceMotion ? 'done' : 'playing');
-  const [showIntegrate, setShowIntegrate] = useState(false);
+  const splineRef = useRef<HTMLIFrameElement>(null);
+
+  const focusSpline = () => {
+    try {
+      if (document.activeElement !== splineRef.current) {
+        splineRef.current?.focus({ preventScroll: true });
+        splineRef.current?.contentWindow?.focus();
+      }
+    } catch {}
+  };
 
   useEffect(() => {
     if (intro !== 'playing') return;
@@ -73,13 +172,51 @@ export function Landing() {
     return () => window.clearTimeout(t);
   }, [intro]);
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://zeroara.vercel.app';
-  const openAndScrollToIntegrate = () => {
-    setShowIntegrate(true);
-    setTimeout(() => {
-      document.getElementById('integrate')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
-    }, 60);
+  useEffect(() => {
+    if (intro === 'done') {
+      const t = setTimeout(focusSpline, 300);
+      return () => clearTimeout(t);
+    }
+  }, [intro]);
+
+  // Proximity auto-focus: when cursor approaches or enters the Spline area, focus automatically
+  useEffect(() => {
+    const handleProximity = (e: MouseEvent) => {
+      if (!splineRef.current) return;
+      const rect = splineRef.current.getBoundingClientRect();
+      if (
+        e.clientX >= rect.left - 80 &&
+        e.clientX <= rect.right + 80 &&
+        e.clientY >= rect.top - 80 &&
+        e.clientY <= rect.bottom + 80
+      ) {
+        focusSpline();
+      }
+    };
+    window.addEventListener('mousemove', handleProximity, { passive: true });
+    return () => window.removeEventListener('mousemove', handleProximity);
+  }, []);
+
+  const [showPromptModal, setShowPromptModal] = useState(false);
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  const copyMasterPrompt = () => {
+    navigator.clipboard.writeText(MASTER_PROMPT);
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 1600);
   };
+
+  useEffect(() => {
+    if (!showPromptModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowPromptModal(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showPromptModal]);
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://zeroara.vercel.app';
+  const scrollToIntegrate = () => document.getElementById('integrate')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
   const openApp = () => navigate('/app');
 
   const scriptSnippet = `<script src="${origin}/sdk/zeroara.js"></script>`;
@@ -113,139 +250,119 @@ report.overallValid;                                 // true when nothing was al
       )}
 
       <div className="landing-viewport">
-      <div className={`landing-shell ${intro === 'done' ? 'landing-enter' : 'landing-hidden'}`}>
-        {/* Top bar */}
-        <header className="landing-top">
-          <a
-            href="/"
-            onClick={(e) => {
-              e.preventDefault();
-              const vp = document.querySelector('.landing-viewport');
-              if (vp) {
-                vp.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
-              } else {
-                window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
-              }
-              navigate('/');
-            }}
-            className="landing-brand"
-            aria-label="Zeroara home"
-          >
-            <img src="/logo.png" alt="Zeroara Logo" className="landing-brand-logo" />
-            <span>ZEROARA</span>
-          </a>
-          <nav className="landing-nav">
-            <a href="#how">How it works</a>
-            <button
-              type="button"
-              onClick={openAndScrollToIntegrate}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', fontWeight: 600, color: 'var(--fg-muted)', padding: 0 }}
-            >
-              Integrate
-            </button>
-            <button type="button" onClick={openApp}>
-              Product demo <ArrowRight size={13} />
-            </button>
-          </nav>
-        </header>
-
-        {/* Hero */}
-        <section className="landing-hero">
-          <span className="neu-badge">Provable redaction · zero-knowledge</span>
-          <h1>
-            Prove the fact.
-            <br />
-            Keep the document.
-          </h1>
-          <p>
-            Zeroara lets your website confirm a condition about an ID or financial document — age, income, balance — without ever receiving it. Everything happens on the user’s device.
-          </p>
-          <div className="landing-actions">
-            <button type="button" className="neu-btn-primary" onClick={openAndScrollToIntegrate}>
-              Add Zeroara to my website
-            </button>
-            <button type="button" className="neu-btn-secondary" onClick={openApp}>
-              Product demo <ArrowRight size={16} />
-            </button>
-          </div>
-          <span className="neu-hash-pill landing-note">0 bytes of document data leave the device</span>
-        </section>
-
-        {/* How it works */}
-        <section id="how" className="landing-section">
-          <h2>How it works</h2>
-          <div className="landing-steps">
-            {STEPS.map((s, i) => (
-              <div key={s.title} className="neu-card landing-step">
-                <span className="neu-check-icon neu-tone-active">{s.icon}</span>
-                <span className="landing-step-n">0{i + 1}</span>
-                <h3>{s.title}</h3>
-                <p>{s.text}</p>
-              </div>
-            ))}
-          </div>
-          <div className="landing-pills">
-            <span className="neu-claim-badge neu-tone-ok">You receive · the outcome, the proof, the seal, a redacted PDF</span>
-            <span className="neu-claim-badge neu-tone-muted">You never receive · the document, its values, who the person is</span>
-          </div>
-        </section>
-
-        {/* Collapsed invitation card when integration details are hidden */}
-        {!showIntegrate && (
-          <div
-            className="neu-card"
-            style={{
-              padding: '24px 28px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              flexWrap: 'wrap',
-              gap: '16px',
-              borderRadius: '24px',
-              cursor: 'pointer',
-            }}
-            onClick={openAndScrollToIntegrate}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.05rem', color: 'var(--fg-primary)' }}>
-                Developer Integration Guide
-              </span>
-              <span style={{ fontSize: '0.86rem', color: 'var(--fg-muted)' }}>
-                Three steps. One script, zero backend setup required. Click to view full SDK instructions.
-              </span>
+        <div className={`landing-shell ${intro === 'done' ? 'landing-enter' : 'landing-hidden'}`}>
+          {/* Top bar */}
+          <header className="landing-top">
+            <div className="landing-brand">
+              <img src="/logo.png" alt="" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
+              <span>ZEROARA</span>
             </div>
-            <button
-              type="button"
-              className="neu-btn-primary"
-              style={{ fontSize: '0.84rem', padding: '10px 20px', gap: '8px' }}
-              onClick={(e) => {
-                e.stopPropagation();
-                openAndScrollToIntegrate();
-              }}
-            >
-              <span>Add to your website</span>
-              <ChevronDown size={15} />
-            </button>
-          </div>
-        )}
-
-        {/* Integrate — hidden by default, expands and scrolls when requested */}
-        {showIntegrate && (
-          <section id="integrate" className="landing-section landing-integrate-enter">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-              <div>
-                <h2>Add Zeroara to your website</h2>
-                <p className="landing-lead">Three steps. One script, no backend.</p>
-              </div>
-              <button
-                type="button"
-                className="neu-pill-btn"
-                style={{ fontSize: '0.74rem', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                onClick={() => setShowIntegrate(false)}
-              >
-                <X size={13} />
-                <span>Hide integration details</span>
+            <nav className="landing-nav">
+              <a href="#how">How it works</a>
+              <a href="#integrate">Integrate</a>
+              <button type="button" onClick={openApp}>
+                Product demo <ArrowRight size={13} />
               </button>
+            </nav>
+          </header>
+
+          {/* Hero */}
+          <section className="landing-hero" onMouseMove={focusSpline}>
+            <div className="landing-hero-content">
+              <h1>
+                Prove the fact.
+                <br />
+                Keep the document.
+              </h1>
+              <div className="landing-actions">
+                <button type="button" className="neu-btn-primary" onClick={scrollToIntegrate}>
+                  Add Zeroara to my website
+                </button>
+                <button type="button" className="neu-btn-secondary" onClick={openApp}>
+                  Product demo <ArrowRight size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div
+              className="landing-hero-spline"
+              aria-label="Interactive 3D radial pattern"
+              onMouseEnter={focusSpline}
+              onMouseMove={focusSpline}
+            >
+              <div className="landing-spline-inner">
+                <iframe
+                  ref={splineRef}
+                  src="https://app.spline.design/file/67176acc-91e0-4626-a013-f2826707ec90?view=preview"
+                  frameBorder="0"
+                  title="Interactive 3D Scene"
+                  allow="autoplay; fullscreen"
+                  loading="eager"
+                />
+              </div>
+              {/* White-ish illumination tint */}
+              <div className="landing-spline-tint" aria-hidden="true" />
+              {/* Feathered gradient vignette overlay melting edges into page background */}
+              <div className="landing-spline-vignette" aria-hidden="true" />
+              {/* Top-right corner cover ensuring no buttons can show */}
+              <div className="landing-spline-corner-cover" aria-hidden="true" />
+            </div>
+          </section>
+
+          {/* How it works */}
+          <section id="how" className="landing-section">
+            <h2>How it works</h2>
+            <p className="landing-lead">Cryptographic protocol specification and verification lifecycle.</p>
+
+            <div className="landing-edu-flow">
+              {PROTOCOL_STAGES.map((s) => (
+                <div key={s.step} className="landing-edu-phase">
+                  <div className="landing-edu-meta">
+                    <span className="landing-edu-num">{s.step}</span>
+                    <h3 className="landing-edu-title">{s.title}</h3>
+                  </div>
+                  <div className="landing-edu-body">
+                    <p>{s.description}</p>
+                    <pre className="landing-edu-math">{s.math}</pre>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* Integrate */}
+          <section id="integrate" className="landing-section">
+            <h2>Add Zeroara to your website</h2>
+            <p className="landing-lead">Three steps. One script, no backend.</p>
+
+            <div className="landing-agent-box">
+              <div className="landing-agent-copy-group">
+                <span className="landing-agent-badge">
+                  <Terminal size={13} />
+                  <span>Coding Agent Integration</span>
+                </span>
+                <p className="landing-agent-desc">
+                  Building with Cursor, Claude Code, Windsurf, or Copilot? Use this master prompt to let your coding agent wire Zeroara into your codebase in one turn.
+                </p>
+              </div>
+              <div className="landing-agent-btns">
+                <button
+                  type="button"
+                  className="neu-btn-secondary landing-agent-btn"
+                  onClick={() => setShowPromptModal(true)}
+                >
+                  <FileText size={14} />
+                  <span>View prompt</span>
+                </button>
+                <button
+                  type="button"
+                  className="neu-btn-primary landing-agent-btn"
+                  onClick={copyMasterPrompt}
+                >
+                  {promptCopied ? <Check size={14} className="neu-tone-ok" /> : <Copy size={14} />}
+                  <span>{promptCopied ? 'Copied' : 'Copy prompt'}</span>
+                </button>
+              </div>
             </div>
 
             <ol className="landing-howto">
@@ -288,70 +405,52 @@ report.overallValid;                                 // true when nothing was al
                 <CodeBlock lang="js" code={desktopSnippet} />
               </div>
             </div>
-
-            <div className="landing-docs">
-              <span className="landing-docs-label">Document types</span>
-              <div className="landing-pills">
-                {DOCUMENTS.map((d) => (
-                  <span key={d.id} className="neu-hash-pill">
-                    {d.id}
-                    {d.claim ? ` · ${d.claim} ≥ n` : ' · seal-only'}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="landing-docs">
-              <span className="landing-docs-label">Specimen documents for testing</span>
-              <p className="landing-well" style={{ padding: 0, margin: 0, background: 'none', boxShadow: 'none', fontSize: '0.84rem', color: 'var(--fg-muted)' }}>
-                Synthetic, clearly marked, one per document type. Use them as the “real file” when trying the flow from your own site.
-              </p>
-              <div className="landing-pills">
-                {SPECIMENS.map((f) => (
-                  <a key={f.file} className="neu-hash-pill" href={`/specimens/${f.file}`} download style={{ textDecoration: 'none' }}>
-                    {f.label}
-                  </a>
-                ))}
-              </div>
-            </div>
-
-            <div className="landing-links">
-              <a className="neu-btn-secondary" href="/demo/index.html" target="_blank" rel="noreferrer">
-                Playground <ExternalLink size={14} />
-              </a>
-              <a className="neu-btn-secondary" href="/sdk/zeroara.d.ts" target="_blank" rel="noreferrer">
-                SDK types <ExternalLink size={14} />
-              </a>
-              <a className="neu-btn-secondary" href="https://github.com/CHOKI-CHOKI-C2C-26/zeroara/blob/main/docs/INTEGRATION.md" target="_blank" rel="noreferrer">
-                Documentation <ExternalLink size={14} />
-              </a>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '10px' }}>
-              <button
-                type="button"
-                className="neu-pill-btn"
-                style={{ fontSize: '0.76rem', padding: '6px 16px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                onClick={() => {
-                  setShowIntegrate(false);
-                  document.getElementById('how')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
-                }}
-              >
-                <X size={13} />
-                <span>Hide integration details</span>
-              </button>
-            </div>
           </section>
-        )}
+        </div>
+      </div>
 
-        <footer className="landing-footer">
-          <span>Zeroara · provable redaction protocol</span>
-          <button type="button" onClick={openApp}>
-            Open the app <ArrowRight size={12} />
-          </button>
-        </footer>
-      </div>
-      </div>
+      {showPromptModal && (
+        <div
+          className="landing-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Coding Agent Master Integration Prompt"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowPromptModal(false);
+          }}
+        >
+          <div className="neu-card landing-modal-box">
+            <div className="landing-modal-head">
+              <div className="landing-modal-title">
+                <Terminal size={17} />
+                <h3>Coding Agent Master Prompt</h3>
+              </div>
+              <div className="landing-modal-actions">
+                <button
+                  type="button"
+                  className="neu-btn-primary landing-modal-copy"
+                  onClick={copyMasterPrompt}
+                >
+                  {promptCopied ? <Check size={13} className="neu-tone-ok" /> : <Copy size={13} />}
+                  <span>{promptCopied ? 'Copied' : 'Copy'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="neu-pill-btn landing-modal-close"
+                  onClick={() => setShowPromptModal(false)}
+                  aria-label="Close"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            </div>
+            <p className="landing-modal-desc">
+              Feed this complete specification into Cursor, Windsurf, Claude Code, or Copilot. It gives the model the exact SDK contract, typing, error handling, and proof verification methods.
+            </p>
+            <pre className="neu-code-block landing-modal-pre">{MASTER_PROMPT}</pre>
+          </div>
+        </div>
+      )}
     </>
   );
 }
