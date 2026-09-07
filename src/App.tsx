@@ -278,6 +278,7 @@ export function App() {
   // Real OCR & Extraction Pipeline State
   const [detectedFields, setDetectedFields] = useState<ClassifiedTarget[]>([]);
   const [extractedTokens, setExtractedTokens] = useState<ExtractedSpatialToken[]>([]);
+  const [tokenFilter, setTokenFilter] = useState('');
   const [ocrTelemetry, setOcrTelemetry] = useState<OcrTelemetrySummary | null>(null);
   const [suryaStatus, setSuryaStatus] = useState<SuryaHealth>({ online: false, ready: false });
   // Password-protected PDFs (e-Aadhaar): prompt inline, then re-run extraction.
@@ -512,7 +513,8 @@ export function App() {
 
   // Invalidation handler for downstream cryptographic state
   const invalidateDownstreamState = (reason?: string) => {
-    if (proofResult || masterSeal || auditPackage || proofVerified !== null) {
+    if (redactionResult || proofResult || masterSeal || auditPackage || proofVerified !== null) {
+      setRedactionResult(null);
       setProofResult(null);
       setProofVerified(null);
       setProofVerifyLatencyMs(null);
@@ -881,11 +883,35 @@ export function App() {
     });
   };
 
-  // Add a specific token as a redaction target
+  // Add or toggle a specific token as a redaction target
   const handleAddTokenAsTarget = (token: ExtractedSpatialToken) => {
+    invalidateDownstreamState('Targets modified — re-run burn to update redaction.');
+
+    // Check if this token is already covered by an existing manual target
+    const existingManualIdx = detectedFields.findIndex(
+      (f) =>
+        f.source === 'MANUAL_USER' &&
+        f.page === token.page &&
+        (f.fieldKey === token.id ||
+          f.id.includes(token.id) ||
+          (f.x <= token.x + 2 &&
+            f.x + f.width >= token.x + token.width - 2 &&
+            f.y <= token.y + 2 &&
+            f.y + f.height >= token.y + token.height - 2))
+    );
+
+    if (existingManualIdx >= 0) {
+      // Toggle off: remove the manual target
+      const targetId = detectedFields[existingManualIdx].id;
+      handleRemoveTarget(targetId);
+      return;
+    }
+
+    const cleanText = token.text.trim().replace(/\s+/g, ' ');
     const newTarget: ClassifiedTarget = {
-      id: `manual_${Date.now()}`,
-      label: `Redaction Zone: "${token.text.slice(0, 16)}"`,
+      id: `manual_${token.id}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      fieldKey: token.id,
+      label: `Redaction Zone: "${cleanText.slice(0, 16)}"`,
       classification: 'Manual Redaction Zone',
       extractedValue: token.text,
       x: Math.max(0, token.x - 3),
@@ -901,11 +927,65 @@ export function App() {
     setSelectedFieldId(newTarget.id);
   };
 
+  // Add all extracted tokens as manual redaction targets
+  const handleAddAllTokensAsTargets = () => {
+    invalidateDownstreamState('Targets modified — re-run burn to update redaction.');
+    const timestamp = Date.now();
+    let counter = 0;
+    const newTargets: ClassifiedTarget[] = [];
+
+    for (const token of extractedTokens) {
+      const allCurrent = [...detectedFields, ...newTargets];
+      const alreadyCovered = allCurrent.some(
+        (f) =>
+          f.page === token.page &&
+          (f.fieldKey === token.id ||
+            f.id.includes(token.id) ||
+            (f.x <= token.x + 2 &&
+              f.x + f.width >= token.x + token.width - 2 &&
+              f.y <= token.y + 2 &&
+              f.y + f.height >= token.y + token.height - 2))
+      );
+
+      if (!alreadyCovered) {
+        const cleanText = token.text.trim().replace(/\s+/g, ' ');
+        newTargets.push({
+          id: `manual_${token.id}_${timestamp}_${counter++}`,
+          fieldKey: token.id,
+          label: `Redaction Zone: "${cleanText.slice(0, 16)}"`,
+          classification: 'Manual Redaction Zone',
+          extractedValue: token.text,
+          x: Math.max(0, token.x - 3),
+          y: Math.max(0, token.y - 2),
+          width: token.width + 6,
+          height: token.height + 4,
+          page: token.page,
+          action: 'DIRECT_BURN',
+          source: 'MANUAL_USER',
+        });
+      }
+    }
+
+    if (newTargets.length > 0) {
+      setDetectedFields((prev) => [...prev, ...newTargets]);
+    }
+  };
+
+  // Remove all manual redaction targets added by user
+  const handleClearManualTargets = () => {
+    invalidateDownstreamState('Targets modified — re-run burn to update redaction.');
+    setDetectedFields((prev) => prev.filter((f) => f.source !== 'MANUAL_USER'));
+    if (selectedFieldId?.startsWith('manual_')) {
+      setSelectedFieldId(null);
+    }
+  };
+
   // Remove a target
   // Aadhaar: the photo and QR are image regions Surya cannot read as text.
   // Offer one-click suggested regions (proportional to the card) that the user
   // can keep or remove. They burn as DIRECT_BURN and bind into the seal.
   const addRegionTarget = (key: 'photo' | 'qr') => {
+    invalidateDownstreamState('Targets modified — re-run burn to update redaction.');
     const c = canvasRef.current;
     if (!c) return;
     const spec =
@@ -931,6 +1011,7 @@ export function App() {
   };
 
   const handleRemoveTarget = (id: string) => {
+    invalidateDownstreamState('Targets modified — re-run burn to update redaction.');
     setDetectedFields((prev) => prev.filter((f) => f.id !== id));
     if (selectedFieldId === id) {
       setSelectedFieldId(null);
@@ -1731,7 +1812,7 @@ export function App() {
                   )}
 
                   {/* Stage detail — fills the remaining height, scrolls internally if it must */}
-                  <div className="neu-well pane-scroll" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div className="neu-well pane-scroll" style={{ padding: '14px 14px 28px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {stage === 1 && (
                       <>
                         {verifierRequest && (
@@ -1855,7 +1936,17 @@ export function App() {
                         {!ocrRunning && doc && !pdfLocked && detectedFields.length === 0 && (
                           <span style={{ fontSize: '0.74rem', color: 'var(--fg-muted)' }}>Nothing was recognised. Try a sharper, well-lit photo of the front of the card, or open the token index below to mark targets by hand.</span>
                         )}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }} data-tour="targets">
+                        <div
+                          data-tour="targets"
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '5px',
+                            maxHeight: '185px',
+                            overflowY: 'auto',
+                            paddingRight: '4px',
+                          }}
+                        >
                           {detectedFields.map((field) => {
                             const tone = field.action === 'PROVE_AND_BURN' ? 'active' : field.action === 'DIRECT_BURN' ? 'warn' : 'muted';
                             const Icon = field.action === 'PROVE_AND_BURN' ? Cpu : field.action === 'DIRECT_BURN' ? Flame : Eye;
@@ -1920,13 +2011,106 @@ export function App() {
                           <KV label="Latency" value={ocrTelemetry ? `${ocrTelemetry.latencyMs} ms` : '—'} />
                         </Accordion>
                         <Accordion title="Token index" summary={`${extractedTokens.length} tokens`} icon={<SlidersHorizontal size={14} />}>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>Click any token to mark it as a redaction target.</span>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', maxHeight: '160px', overflowY: 'auto' }}>
-                            {extractedTokens.map((t) => (
-                              <button key={t.id} type="button" className="neu-pill-btn" style={{ fontSize: '0.66rem', padding: '3px 8px' }} onClick={() => handleAddTokenAsTarget(t)} title={`page ${t.page} · ${Math.round(t.confidence ?? 0)}%`}>
-                                {t.text}
-                              </button>
-                            ))}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)' }}>
+                                Click tokens to toggle redaction.
+                              </span>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                {extractedTokens.length > 0 && (
+                                  <button
+                                    type="button"
+                                    className="neu-pill-btn"
+                                    style={{ fontSize: '0.65rem', padding: '2px 8px', color: 'var(--accent)' }}
+                                    onClick={handleAddAllTokensAsTargets}
+                                    title="Add all extracted tokens as redaction targets"
+                                  >
+                                    + Redact all ({extractedTokens.length})
+                                  </button>
+                                )}
+                                {detectedFields.some((f) => f.source === 'MANUAL_USER') && (
+                                  <button
+                                    type="button"
+                                    className="neu-pill-btn"
+                                    style={{ fontSize: '0.65rem', padding: '2px 8px', color: 'var(--fg-muted)' }}
+                                    onClick={handleClearManualTargets}
+                                    title="Remove all manual token redactions"
+                                  >
+                                    Clear manual
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {extractedTokens.length > 6 && (
+                              <input
+                                className="neu-input"
+                                type="text"
+                                placeholder="Filter tokens..."
+                                value={tokenFilter}
+                                onChange={(e) => setTokenFilter(e.target.value)}
+                                style={{ fontSize: '0.72rem', padding: '4px 8px', width: '100%' }}
+                              />
+                            )}
+                            <div
+                              style={{
+                                maxHeight: '170px',
+                                overflowY: 'auto',
+                                padding: '6px 8px 36px 6px',
+                                borderRadius: '12px',
+                                boxShadow: 'var(--shadow-inset-sm)',
+                                backgroundColor: 'var(--bg-surface)',
+                              }}
+                            >
+                              {extractedTokens.length === 0 ? (
+                                <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)', fontStyle: 'italic', display: 'block', padding: '4px' }}>
+                                  No text tokens detected in this document.
+                                </span>
+                              ) : (() => {
+                                const filtered = extractedTokens.filter(
+                                  (t) => !tokenFilter.trim() || t.text.toLowerCase().includes(tokenFilter.trim().toLowerCase())
+                                );
+                                if (filtered.length === 0) {
+                                  return (
+                                    <span style={{ fontSize: '0.72rem', color: 'var(--fg-muted)', fontStyle: 'italic', display: 'block', padding: '4px' }}>
+                                      No tokens match "{tokenFilter}".
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {filtered.map((t) => {
+                                      const isCovered = detectedFields.some(
+                                        (f) =>
+                                          f.page === t.page &&
+                                          (f.fieldKey === t.id ||
+                                            (f.source === 'MANUAL_USER' && f.id.includes(t.id)) ||
+                                            (f.x <= t.x + 2 &&
+                                              f.x + f.width >= t.x + t.width - 2 &&
+                                              f.y <= t.y + 2 &&
+                                              f.y + f.height >= t.y + t.height - 2))
+                                      );
+                                      return (
+                                        <button
+                                          key={t.id}
+                                          type="button"
+                                          className={`neu-pill-btn ${isCovered ? 'active' : ''}`}
+                                          style={{
+                                            fontSize: '0.66rem',
+                                            padding: '3px 8px',
+                                            borderColor: isCovered ? 'var(--accent)' : undefined,
+                                          }}
+                                          onClick={() => handleAddTokenAsTarget(t)}
+                                          title={`page ${t.page} · ${Math.round(t.confidence ?? 0)}% · ${isCovered ? 'Click to un-redact' : 'Click to redact'}`}
+                                        >
+                                          {isCovered ? '✓ ' : '+ '}
+                                          {t.text}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </div>
                           </div>
                         </Accordion>
                       </>

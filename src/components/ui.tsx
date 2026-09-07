@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, X, Copy, Check, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 
 /* Neumorphic progressive-disclosure primitives: a single-select dropdown, a
@@ -53,8 +53,19 @@ export function Accordion({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open && containerRef.current) {
+      const timer = setTimeout(() => {
+        containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [open]);
+
   return (
-    <div className="neu-accordion">
+    <div className="neu-accordion" ref={containerRef}>
       <button type="button" className="neu-accordion-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {icon}
