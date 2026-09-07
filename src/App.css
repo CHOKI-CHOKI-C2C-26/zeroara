@@ -851,6 +851,7 @@ pre {
 .landing-note { font-size: 0.72rem; }
 
 .landing-section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 24px; }
+.landing-integrate-enter { animation: landing-in 450ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 .landing-section h2 { margin: 0; font-family: var(--font-display); font-weight: 800; letter-spacing: -0.025em; font-size: clamp(1.6rem, 3.2vw, 2.2rem); color: var(--fg-primary); }
 .landing-lead { margin: -8px 0 0; color: var(--fg-muted); font-size: 0.98rem; }
 

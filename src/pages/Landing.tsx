@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, Copy, Check, KeyRound, ScanLine, Flame, Cpu, Fingerprint, ExternalLink } from 'lucide-react';
+import { ArrowRight, Copy, Check, KeyRound, ScanLine, Flame, Cpu, Fingerprint, ExternalLink, ChevronDown, X } from 'lucide-react';
 import { navigate } from './router';
 
 /* Landing page: intro word, hero with two actions, how it works, integration. */
@@ -64,6 +64,7 @@ function CodeBlock({ code, lang }: { code: string; lang: string }) {
 export function Landing() {
   const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const [intro, setIntro] = useState<'playing' | 'done'>(introPlayed || reduceMotion ? 'done' : 'playing');
+  const [showIntegrate, setShowIntegrate] = useState(false);
 
   useEffect(() => {
     if (intro !== 'playing') return;
@@ -73,7 +74,12 @@ export function Landing() {
   }, [intro]);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://zeroara.vercel.app';
-  const scrollToIntegrate = () => document.getElementById('integrate')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
+  const openAndScrollToIntegrate = () => {
+    setShowIntegrate(true);
+    setTimeout(() => {
+      document.getElementById('integrate')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+    }, 60);
+  };
   const openApp = () => navigate('/app');
 
   const scriptSnippet = `<script src="${origin}/sdk/zeroara.js"></script>`;
@@ -116,7 +122,13 @@ report.overallValid;                                 // true when nothing was al
           </div>
           <nav className="landing-nav">
             <a href="#how">How it works</a>
-            <a href="#integrate">Integrate</a>
+            <button
+              type="button"
+              onClick={openAndScrollToIntegrate}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', font: 'inherit', fontWeight: 600, color: 'var(--fg-muted)', padding: 0 }}
+            >
+              Integrate
+            </button>
             <button type="button" onClick={openApp}>
               Product demo <ArrowRight size={13} />
             </button>
@@ -135,7 +147,7 @@ report.overallValid;                                 // true when nothing was al
             Zeroara lets your website confirm a condition about an ID or financial document — age, income, balance — without ever receiving it. Everything happens on the user’s device.
           </p>
           <div className="landing-actions">
-            <button type="button" className="neu-btn-primary" onClick={scrollToIntegrate}>
+            <button type="button" className="neu-btn-primary" onClick={openAndScrollToIntegrate}>
               Add Zeroara to my website
             </button>
             <button type="button" className="neu-btn-secondary" onClick={openApp}>
@@ -164,90 +176,159 @@ report.overallValid;                                 // true when nothing was al
           </div>
         </section>
 
-        {/* Integrate */}
-        <section id="integrate" className="landing-section">
-          <h2>Add Zeroara to your website</h2>
-          <p className="landing-lead">Three steps. One script, no backend.</p>
-
-          <ol className="landing-howto">
-            <li>
-              <div className="landing-howto-head">
-                <span className="neu-check-icon neu-tone-active">1</span>
-                <h3>Load the SDK</h3>
-              </div>
-              <CodeBlock lang="html" code={scriptSnippet} />
-            </li>
-            <li>
-              <div className="landing-howto-head">
-                <span className="neu-check-icon neu-tone-active">2</span>
-                <h3>Ask for the claim</h3>
-              </div>
-              <p>Call it from a click. Zeroara opens for the user, and the promise resolves with the receipt once they authorize the release.</p>
-              <CodeBlock lang="js" code={verifySnippet} />
-            </li>
-            <li>
-              <div className="landing-howto-head">
-                <span className="neu-check-icon neu-tone-active">3</span>
-                <h3>Trust, then verify</h3>
-              </div>
-              <p>The SDK already checks the nonce, the document type, the proof and the threshold. Re-run the five checks yourself whenever you like.</p>
-              <CodeBlock lang="js" code={auditSnippet} />
-            </li>
-          </ol>
-
-          <div className="landing-grid2">
-            <div className="neu-well landing-well">
-              <h3>Drop-in button</h3>
-              <p>Renders “Verify with Zeroara” with a status line and a fallback link.</p>
-              <CodeBlock lang="js" code={mountSnippet} />
+        {/* Collapsed invitation card when integration details are hidden */}
+        {!showIntegrate && (
+          <div
+            className="neu-card"
+            style={{
+              padding: '24px 28px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '16px',
+              borderRadius: '24px',
+              cursor: 'pointer',
+            }}
+            onClick={openAndScrollToIntegrate}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <span style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1.05rem', color: 'var(--fg-primary)' }}>
+                Developer Integration Guide
+              </span>
+              <span style={{ fontSize: '0.86rem', color: 'var(--fg-muted)' }}>
+                Three steps. One script, zero backend setup required. Click to view full SDK instructions.
+              </span>
             </div>
-            <div className="neu-well landing-well">
-              <h3>Desktop app &amp; verifier API</h3>
-              <p>
-                For an installed Zeroara app: your server creates a session, the OS opens <code>zeroara://</code>, and the app posts the proof to your callback. This deployment serves the API at <code>/api/verify/*</code>.
+            <button
+              type="button"
+              className="neu-btn-primary"
+              style={{ fontSize: '0.84rem', padding: '10px 20px', gap: '8px' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                openAndScrollToIntegrate();
+              }}
+            >
+              <span>Add to your website</span>
+              <ChevronDown size={15} />
+            </button>
+          </div>
+        )}
+
+        {/* Integrate — hidden by default, expands and scrolls when requested */}
+        {showIntegrate && (
+          <section id="integrate" className="landing-section landing-integrate-enter">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+              <div>
+                <h2>Add Zeroara to your website</h2>
+                <p className="landing-lead">Three steps. One script, no backend.</p>
+              </div>
+              <button
+                type="button"
+                className="neu-pill-btn"
+                style={{ fontSize: '0.74rem', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => setShowIntegrate(false)}
+              >
+                <X size={13} />
+                <span>Hide integration details</span>
+              </button>
+            </div>
+
+            <ol className="landing-howto">
+              <li>
+                <div className="landing-howto-head">
+                  <span className="neu-check-icon neu-tone-active">1</span>
+                  <h3>Load the SDK</h3>
+                </div>
+                <CodeBlock lang="html" code={scriptSnippet} />
+              </li>
+              <li>
+                <div className="landing-howto-head">
+                  <span className="neu-check-icon neu-tone-active">2</span>
+                  <h3>Ask for the claim</h3>
+                </div>
+                <p>Call it from a click. Zeroara opens for the user, and the promise resolves with the receipt once they authorize the release.</p>
+                <CodeBlock lang="js" code={verifySnippet} />
+              </li>
+              <li>
+                <div className="landing-howto-head">
+                  <span className="neu-check-icon neu-tone-active">3</span>
+                  <h3>Trust, then verify</h3>
+                </div>
+                <p>The SDK already checks the nonce, the document type, the proof and the threshold. Re-run the five checks yourself whenever you like.</p>
+                <CodeBlock lang="js" code={auditSnippet} />
+              </li>
+            </ol>
+
+            <div className="landing-grid2">
+              <div className="neu-well landing-well">
+                <h3>Drop-in button</h3>
+                <p>Renders “Verify with Zeroara” with a status line and a fallback link.</p>
+                <CodeBlock lang="js" code={mountSnippet} />
+              </div>
+              <div className="neu-well landing-well">
+                <h3>Desktop app &amp; verifier API</h3>
+                <p>
+                  For an installed Zeroara app: your server creates a session, the OS opens <code>zeroara://</code>, and the app posts the proof to your callback. This deployment serves the API at <code>/api/verify/*</code>.
+                </p>
+                <CodeBlock lang="js" code={desktopSnippet} />
+              </div>
+            </div>
+
+            <div className="landing-docs">
+              <span className="landing-docs-label">Document types</span>
+              <div className="landing-pills">
+                {DOCUMENTS.map((d) => (
+                  <span key={d.id} className="neu-hash-pill">
+                    {d.id}
+                    {d.claim ? ` · ${d.claim} ≥ n` : ' · seal-only'}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="landing-docs">
+              <span className="landing-docs-label">Specimen documents for testing</span>
+              <p className="landing-well" style={{ padding: 0, margin: 0, background: 'none', boxShadow: 'none', fontSize: '0.84rem', color: 'var(--fg-muted)' }}>
+                Synthetic, clearly marked, one per document type. Use them as the “real file” when trying the flow from your own site.
               </p>
-              <CodeBlock lang="js" code={desktopSnippet} />
+              <div className="landing-pills">
+                {SPECIMENS.map((f) => (
+                  <a key={f.file} className="neu-hash-pill" href={`/specimens/${f.file}`} download style={{ textDecoration: 'none' }}>
+                    {f.label}
+                  </a>
+                ))}
+              </div>
             </div>
-          </div>
 
-          <div className="landing-docs">
-            <span className="landing-docs-label">Document types</span>
-            <div className="landing-pills">
-              {DOCUMENTS.map((d) => (
-                <span key={d.id} className="neu-hash-pill">
-                  {d.id}
-                  {d.claim ? ` · ${d.claim} ≥ n` : ' · seal-only'}
-                </span>
-              ))}
+            <div className="landing-links">
+              <a className="neu-btn-secondary" href="/demo/index.html" target="_blank" rel="noreferrer">
+                Playground <ExternalLink size={14} />
+              </a>
+              <a className="neu-btn-secondary" href="/sdk/zeroara.d.ts" target="_blank" rel="noreferrer">
+                SDK types <ExternalLink size={14} />
+              </a>
+              <a className="neu-btn-secondary" href="https://github.com/CHOKI-CHOKI-C2C-26/zeroara/blob/main/docs/INTEGRATION.md" target="_blank" rel="noreferrer">
+                Documentation <ExternalLink size={14} />
+              </a>
             </div>
-          </div>
 
-          <div className="landing-docs">
-            <span className="landing-docs-label">Specimen documents for testing</span>
-            <p className="landing-well" style={{ padding: 0, margin: 0, background: 'none', boxShadow: 'none', fontSize: '0.84rem', color: 'var(--fg-muted)' }}>
-              Synthetic, clearly marked, one per document type. Use them as the “real file” when trying the flow from your own site.
-            </p>
-            <div className="landing-pills">
-              {SPECIMENS.map((f) => (
-                <a key={f.file} className="neu-hash-pill" href={`/specimens/${f.file}`} download style={{ textDecoration: 'none' }}>
-                  {f.label}
-                </a>
-              ))}
+            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: '10px' }}>
+              <button
+                type="button"
+                className="neu-pill-btn"
+                style={{ fontSize: '0.76rem', padding: '6px 16px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => {
+                  setShowIntegrate(false);
+                  document.getElementById('how')?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth' });
+                }}
+              >
+                <X size={13} />
+                <span>Hide integration details</span>
+              </button>
             </div>
-          </div>
-
-          <div className="landing-links">
-            <a className="neu-btn-secondary" href="/demo/index.html" target="_blank" rel="noreferrer">
-              Playground <ExternalLink size={14} />
-            </a>
-            <a className="neu-btn-secondary" href="/sdk/zeroara.d.ts" target="_blank" rel="noreferrer">
-              SDK types <ExternalLink size={14} />
-            </a>
-            <a className="neu-btn-secondary" href="https://github.com/CHOKI-CHOKI-C2C-26/zeroara/blob/main/docs/INTEGRATION.md" target="_blank" rel="noreferrer">
-              Documentation <ExternalLink size={14} />
-            </a>
-          </div>
-        </section>
+          </section>
+        )}
 
         <footer className="landing-footer">
           <span>Zeroara · provable redaction protocol</span>
