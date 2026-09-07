@@ -30,7 +30,9 @@ export type FieldDetector =
   // Label keyword on a line; the tokens after the label on that line are the value.
   | { kind: 'label'; re: RegExp }
   // Currency/number amounts (handled specially so a witness can be chosen).
-  | { kind: 'currency' }
+  // witnessLabels rank the line labels that identify the witness amount, best first
+  // (e.g. "Closing balance" before any "balance"); unlabelled amounts are burned.
+  | { kind: 'currency'; witnessLabels?: RegExp[] }
   // Date/Year of Birth line -> burns the DOB and yields numericValue = age in years (witness).
   | { kind: 'age_from_dob' }
   // The Latin-script name line directly above the DOB line (Aadhaar card layout).
@@ -86,9 +88,10 @@ export const RE_YEAR = /\b(?:19|20)\d{2}\b/;
 export const RE_EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/;
 export const RE_PHONE_IN = /\b(?:\+91[\-\s]?)?[6-9]\d{9}\b/;         // Indian mobile
 export const RE_SSN = /\b\d{3}[-\s]\d{2}[-\s]\d{4}\b/;               // US SSN (legacy)
+export const RE_TAN = /\b[A-Z]{4}\d{5}[A-Z]\b/;                        // employer TAN: ABCD12345E
 export const RE_GENDER = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 export const RE_CURRENCY =
-  /(?:INR|Rs\.?|₹|USD|US\$|\$|€|£)\s?\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?:\s?(?:INR|USD|EUR|GBP))?/;
+  /(?:INR|Rs\.?|₹|USD|US\$|\$|€|£)\s?\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?:\s?(?:INR|USD|EUR|GBP))?|\b\d{4,9}\.\d{2}\b(?:\s?(?:INR|USD|EUR|GBP))?/;
 
 // Label keywords (India + generic).
 const L_NAME = /\bname\b/i;
@@ -103,6 +106,15 @@ const L_EMPLOYER = /\b(?:employer|company|organi[sz]ation|firm)\b/i;
 const L_DOCNO = /\b(?:document\s*(?:no|number)|id\s*(?:no|number)|reference\s*(?:no|number))\b/i;
 const L_VID = /\b(?:vid|virtual id|enrol?ment no)\b/i;
 const L_GUARDIAN = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
+const L_CUSTOMER = /\b(?:customer\s*(?:id|no|number)|cif(?:\s*(?:no|number))?|crn)\b/i;
+const L_UAN = /\bUAN\b/i;
+
+// Which amount is the witness, per document type (best label first).
+const W_INCOME = [/\b(?:annual|net|total|audited)\s+income\b/i, /\bincome\b|\bsalary\b|\bearnings\b|\bwages?\b|\bcompensation\b/i];
+const W_BALANCE = [/\b(?:closing|available|current|ledger)\s+balance\b|\bbalance\s+(?:as\s+on|at)\b/i, /\bbalance\b/i];
+const W_NET_PAY = [/\bnet\s*(?:pay|salary|payable|amount|earnings)\b|\btake[\s-]?home\b/i, /\bgross\s*(?:pay|salary|earnings)\b/i];
+const W_DECLARED_INCOME = [/\b(?:total|taxable|declared|gross\s+total|net)\s+income\b/i, /\bincome\b/i];
+const W_AMOUNT = [/\b(?:total\s+amount|amount\s+payable|grand\s+total|net\s+payable|amount\s+due)\b/i, /\btotal\b/i, /\bamount\b|\bbalance\b/i];
 
 const PREDICATE_GTE = '>= (Greater than or equal to)';
 const PREDICATE_SEAL_ONLY = 'Seal-only (no numeric predicate)';
@@ -178,6 +190,7 @@ export const SCENARIOS: DocumentScenario[] = [
       { key: 'registration', label: 'Registration Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_REG }, priority: 21 },
       { key: 'department', label: 'Department / Branch', classification: 'Institutional Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_DEPT }, priority: 32 },
       { key: 'batch', label: 'Batch / Year', classification: 'Institutional Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_BATCH }, priority: 33 },
+      dobField(),
     ],
     defaults: { requesterName: 'Campus Access Control', purpose: 'Student identity verification (privacy-preserving)', predicate: PREDICATE_SEAL_ONLY, thresholdValue: 0, unit: '' },
   },
@@ -191,8 +204,9 @@ export const SCENARIOS: DocumentScenario[] = [
     fields: [
       { key: 'account', label: 'Account Number', classification: 'Bank Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_ACCOUNT }, priority: 8 },
       { key: 'ifsc', label: 'IFSC Code', classification: 'Bank Routing Identifier', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_IFSC }, priority: 6 },
+      { key: 'customer', label: 'Customer ID', classification: 'Bank Customer Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_CUSTOMER }, priority: 15 },
       nameField(),
-      { key: 'balance', label: 'Balance / Credit', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency' }, numeric: true, isWitness: true, priority: 50 },
+      { key: 'balance', label: 'Closing Balance', classification: 'Financial Witness Claim (ZK Predicate: balance \u2265 threshold)', action: 'PROVE_AND_BURN', detect: { kind: 'currency', witnessLabels: W_BALANCE }, numeric: true, isWitness: true, priority: 50 },
     ],
     defaults: { requesterName: 'Lender Underwriting Desk', purpose: 'Solvency / balance threshold verification', predicate: PREDICATE_GTE, thresholdValue: 50000, unit: 'INR' },
   },
@@ -204,10 +218,13 @@ export const SCENARIOS: DocumentScenario[] = [
       'Payslip. Redacts employee ID and employer, and can prove a net/gross pay predicate (e.g. net pay ≥ threshold) without revealing the amount.',
     proofMode: 'PROOF_BACKED',
     fields: [
-      { key: 'employee_id', label: 'Employee ID', classification: 'Employment Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_EMPID }, priority: 20 },
-      { key: 'employer', label: 'Employer', classification: 'Employment Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_EMPLOYER }, priority: 30 },
       { key: 'pan', label: 'PAN / Tax ID', classification: 'Tax Identifier (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_PAN }, priority: 6 },
-      { key: 'pay', label: 'Net / Gross Pay', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency' }, numeric: true, isWitness: true, priority: 50 },
+      { key: 'uan', label: 'UAN', classification: 'Provident Fund Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_UAN }, priority: 7 },
+      { key: 'account', label: 'Bank Account Number', classification: 'Bank Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_ACCOUNT }, priority: 8 },
+      { key: 'employee_id', label: 'Employee ID', classification: 'Employment Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_EMPID }, priority: 20 },
+      nameField(),
+      { key: 'employer', label: 'Employer', classification: 'Employment Attribute', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_EMPLOYER }, priority: 31 },
+      { key: 'pay', label: 'Net Pay', classification: 'Financial Witness Claim (ZK Predicate: net pay \u2265 threshold)', action: 'PROVE_AND_BURN', detect: { kind: 'currency', witnessLabels: W_NET_PAY }, numeric: true, isWitness: true, priority: 50 },
     ],
     defaults: { requesterName: 'Rental / Lending Verifier', purpose: 'Income threshold verification', predicate: PREDICATE_GTE, thresholdValue: 50000, unit: 'INR' },
   },
@@ -220,8 +237,10 @@ export const SCENARIOS: DocumentScenario[] = [
     proofMode: 'PROOF_BACKED',
     fields: [
       { key: 'pan', label: 'PAN', classification: 'Permanent Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_PAN }, priority: 6 },
+      { key: 'tan', label: 'Employer TAN', classification: 'Tax Deduction Account Number', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_TAN }, priority: 7 },
       nameField(),
-      { key: 'income', label: 'Declared Income / Tax', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency' }, numeric: true, isWitness: true, priority: 50 },
+      addressField(),
+      { key: 'income', label: 'Total Income', classification: 'Financial Witness Claim (ZK Predicate: income \u2265 threshold)', action: 'PROVE_AND_BURN', detect: { kind: 'currency', witnessLabels: W_DECLARED_INCOME }, numeric: true, isWitness: true, priority: 50 },
     ],
     defaults: { requesterName: 'Tax Compliance Verifier', purpose: 'Declared income threshold verification', predicate: PREDICATE_GTE, thresholdValue: 250000, unit: 'INR' },
   },
@@ -235,7 +254,7 @@ export const SCENARIOS: DocumentScenario[] = [
     fields: [
       { key: 'ssn', label: 'Social Security Number', classification: 'Government Identifier (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_SSN }, priority: 5 },
       emailField(),
-      { key: 'income', label: '2-Year Trailing Income', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency' }, numeric: true, isWitness: true, priority: 50 },
+      { key: 'income', label: '2-Year Trailing Income', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency', witnessLabels: W_INCOME }, numeric: true, isWitness: true, priority: 50 },
     ],
     defaults: { requesterName: 'Apex Distributed Ventures LP', purpose: 'SEC Rule 506(c) Accredited Investor Verification', predicate: PREDICATE_GTE, thresholdValue: 100000, unit: 'USD' },
   },
@@ -269,7 +288,7 @@ export const SCENARIOS: DocumentScenario[] = [
       { key: 'account', label: 'Account Number', classification: 'Account Number (Sensitive PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_ACCOUNT }, priority: 8 },
       { key: 'ifsc', label: 'Routing / IFSC', classification: 'Routing Identifier', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_IFSC }, priority: 6 },
       emailField(),
-      { key: 'amount', label: 'Amount', classification: 'Financial Witness Claim (ZK Predicate)', action: 'PROVE_AND_BURN', detect: { kind: 'currency' }, numeric: true, isWitness: true, priority: 50 },
+      { key: 'amount', label: 'Total Amount', classification: 'Financial Witness Claim (ZK Predicate: amount \u2265 threshold)', action: 'PROVE_AND_BURN', detect: { kind: 'currency', witnessLabels: W_AMOUNT }, numeric: true, isWitness: true, priority: 50 },
     ],
     defaults: { requesterName: 'Financial Verifier', purpose: 'Numeric amount threshold verification', predicate: PREDICATE_GTE, thresholdValue: 50000, unit: 'INR' },
   },

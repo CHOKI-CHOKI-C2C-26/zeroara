@@ -16,7 +16,7 @@ import path from 'node:path';
 
 const ZEROARA = process.env.ZEROARA_WEB || 'http://localhost:1420';
 const API = process.env.VERIFIER_API || 'http://localhost:8787';
-const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/aadhaar_specimen.png');
+const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/Aadhaar_SPECIMEN_sample.png');
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failures = 0;
 const check = (cond, msg) => { log((cond ? 'PASS ' : 'FAIL ') + msg); if (!cond) failures++; };

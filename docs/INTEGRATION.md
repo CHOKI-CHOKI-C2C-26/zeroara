@@ -109,6 +109,8 @@ Everything the SDK does is `window.postMessage` plus one URL parameter, so any s
 | `generic_financial` | Any financial document | Largest labelled amount |
 | `pan`, `college_id`, `generic_id` | Identity documents | none: redaction is sealed only |
 
+Every type has a synthetic, clearly marked specimen in `public/specimens/` (served at `https://zeroara.vercel.app/specimens/<file>`) and in the app's Stage 1 (*Load specimen*): Aadhaar, PAN and college ID cards and a generic ID as images (the OCR path), and a bank statement, salary slip, Form 16, invoice and income certificate as PDFs. The witness each document proves is the one its verification presets name: age from the date of birth, closing balance, net pay, total income, total amount payable, audited annual income.
+
 A claim is always `field ≥ value`. Zeroara's Groth16 circuit proves `witness ≥ threshold` over a Poseidon commitment, bound to a session digest of your requester name, purpose, threshold and nonce, so a proof made for one request cannot be replayed for another.
 
 ## 5. Desktop app flow: online verifier ↔ offline Zeroara

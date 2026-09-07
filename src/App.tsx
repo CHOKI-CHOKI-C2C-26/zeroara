@@ -5,6 +5,7 @@ import {
   formatChunkedHash,
   generateSamplePdfBytes,
   generateSampleAadhaarPng,
+  generateSpecimen,
   extractDocumentSpatial,
   classifyForScenario,
   checkSuryaHealth,
@@ -729,14 +730,12 @@ export function App() {
 
   // Ingest synthesized authentic sample PDF document
   const handleLoadSample = async () => {
-    // Sample follows the selected scenario: a SPECIMEN Aadhaar raster for the
-    // Aadhaar flow (exercises real OCR), the income certificate PDF otherwise.
-    const isAadhaar = scenario.id === 'aadhaar';
-    const sampleBytes = isAadhaar ? await generateSampleAadhaarPng() : await generateSamplePdfBytes();
+    // One synthetic SPECIMEN per document type (cards as rasters, statements as PDFs).
+    const specimen = await generateSpecimen(scenario.id);
+    const sampleBytes = specimen.bytes;
     const hashHex = await sha256Hex(sampleBytes);
     const chunkedHash = formatChunkedHash(hashHex);
-    const fileName = isAadhaar ? 'Aadhaar_SPECIMEN_sample.png' : 'Accredited_Investor_Verification_ApexLP.pdf';
-    const mimeType = isAadhaar ? 'image/png' : 'application/pdf';
+    const { fileName, mimeType } = specimen;
 
     const newDoc: IngestedDoc = {
       fileName,
@@ -747,7 +746,7 @@ export function App() {
       timestamp: new Date().toLocaleTimeString(),
       isSample: true,
       rawBytes: sampleBytes,
-      ...(isAadhaar
+      ...(mimeType.startsWith('image/')
         ? { fileObj: new File([sampleBytes as unknown as BlobPart], fileName, { type: mimeType }) }
         : {}),
     };
@@ -783,7 +782,7 @@ export function App() {
     // Test hook (development builds only): lets end-to-end tests fetch the
     // specimen documents as files. Never part of the product flow.
     if (import.meta.env.DEV) {
-      (window as unknown as { __zeroaraDev?: unknown }).__zeroaraDev = { generateSampleAadhaarPng, generateSamplePdfBytes };
+      (window as unknown as { __zeroaraDev?: unknown }).__zeroaraDev = { generateSampleAadhaarPng, generateSamplePdfBytes, generateSpecimen };
     }
 
     const stageParam = params.get('stage') || params.get('phase');
@@ -1507,7 +1506,7 @@ export function App() {
                 </button>
               ) : (
                 <button type="button" className="neu-btn-primary" style={{ fontSize: '0.8rem', padding: '8px 16px' }} onClick={handleLoadSample}>
-                  {scenario.id === 'aadhaar' ? 'Load specimen Aadhaar' : 'Load sample document'}
+                  {`Load specimen: ${scenario.label}`}
                 </button>
               )}
             </div>
@@ -1667,7 +1666,7 @@ export function App() {
                           handleLoadSample();
                         }}
                       >
-                        {scenario.id === 'aadhaar' ? 'Load specimen Aadhaar' : 'Load sample document'}
+                        {`Load specimen: ${scenario.label}`}
                       </button>
                     </div>
                   </div>

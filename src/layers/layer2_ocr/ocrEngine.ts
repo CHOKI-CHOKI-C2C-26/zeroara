@@ -16,7 +16,8 @@ import {
 } from '../../core/scenarios';
 
 if (typeof window !== 'undefined' && (pdfjs as any)?.GlobalWorkerOptions) {
-  (pdfjs as any).GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+  // Wrapper worker: installs Uint8Array hex/base64 polyfills before pdf.js's own worker (see public/pdf.polyfills.mjs).
+  (pdfjs as any).GlobalWorkerOptions.workerSrc = '/pdf.worker.entry.mjs';
 }
 
 // Rendering / OCR resolution controls
@@ -786,14 +787,22 @@ function matchLabelValue(line: ExtractedSpatialToken[], labelRe: RegExp): LineMa
   const re = new RegExp(labelRe.source, labelRe.flags.replace('g', ''));
   const m = re.exec(joined);
   if (!m) return null;
-  const valueStart = m.index + m[0].length;
+  let valueStart = m.index + m[0].length;
+  // "Name of Employee: X" — a colon within a few tokens of the label ends the label.
+  const colonIdx = joined.indexOf(':', valueStart);
+  if (colonIdx >= 0) {
+    const between = spans.filter((sp) => sp.end > valueStart && sp.start < colonIdx).length;
+    if (between <= 3) valueStart = colonIdx + 1;
+  }
   const valueToks = spans
-    .filter((sp) => sp.start >= valueStart)
+    .filter((sp) => sp.end > valueStart)
     .map((sp) => sp.tok)
     .filter((t) => t.text.replace(/[:\-–—.\s]/g, '').length > 0);
   if (!valueToks.length) return null;
   const text = valueToks.map((t) => t.text).join(' ').replace(/^[:\-–—\s.]+/, '').trim();
   if (!text) return null;
+  // "Father's Name" leaves just "Name": that is the rest of the label, not a value.
+  if (/^(?:name|no\.?|number|id|code|date|of)$/i.test(text)) return null;
   return { text, tokens: valueToks };
 }
 
@@ -848,6 +857,69 @@ const RE_NON_BIRTH_DATE = /\b(?:issued?|issue date|date of issue|enrol|enrolment
 const RE_GENDER_LINE = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 const RE_GUARDIAN_LINE = /\b(?:S\/O|D\/O|W\/O|C\/O|son of|daughter of|wife of|care of)\b/i;
 
+// PAN numbers on card photos: OCR confuses O/0, I/1, Z/2, S/5, B/8, G/6 and may
+// split the 5-4-1 groups. Accept a 10-character run whose positions map to the
+// letter/digit structure after those confusions, as long as most of it was
+// read correctly (at least 3 real letters and 2 real digits).
+const PAN_TO_LETTER: Record<string, string> = { '0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B', '4': 'A', '6': 'G' };
+const PAN_TO_DIGIT: Record<string, string> = { O: '0', Q: '0', D: '0', I: '1', L: '1', Z: '2', S: '5', B: '8', A: '4', G: '6', T: '7' };
+const RE_PAN_LOOSE = /\b[A-Za-z0-9]{5}\s?[A-Za-z0-9]{4}\s?[A-Za-z0-9]\b/g; // OCR may lowercase letters
+function panLike(raw: string): boolean {
+  const s = raw.replace(/\s+/g, '').toUpperCase();
+  if (s.length !== 10) return false;
+  if (/^[A-Z]{4}\d{5}[A-Z]$/.test(s)) return false; // an exact TAN is not a misread PAN
+  let letters = 0;
+  let digits = 0;
+  for (let i = 0; i < 10; i++) {
+    const ch = s[i];
+    const wantLetter = i < 5 || i === 9;
+    if (wantLetter) {
+      if (/[A-Z]/.test(ch)) letters++;
+      else if (!PAN_TO_LETTER[ch]) return false;
+    } else if (/\d/.test(ch)) digits++;
+    else if (!PAN_TO_DIGIT[ch]) return false;
+  }
+  return letters >= 3 && digits >= 2;
+}
+function matchPanTolerant(line: ExtractedSpatialToken[]): LineMatch[] {
+  return matchInLine(line, RE_PAN_LOOSE).filter((m) => panLike(m.text));
+}
+
+// Card layouts print the label on one line and the value on the next
+// ("Name" / "SPECIMEN PERSON"). When a line is only the label, take the
+// column-aligned cluster of the next line on the same page as the value.
+function valueBelowLabel(
+  lines: ExtractedSpatialToken[][],
+  li: number,
+  labelRe: RegExp,
+  claimed: Set<string>
+): LineMatch | null {
+  const line = lines[li];
+  const next = lines[li + 1];
+  if (!next || next[0].page !== line[0].page) return null;
+  const lineText = line.map((t) => t.text).join(' ');
+  const re = new RegExp(labelRe.source, labelRe.flags.replace('g', ''));
+  const m = re.exec(lineText);
+  if (!m) return null;
+  const restRaw = lineText.slice(m.index + m[0].length);
+  const rest = restRaw.replace(/[^A-Za-z0-9]/g, '');
+  const before = lineText.slice(0, m.index).replace(/[^A-Za-z0-9]/g, '');
+  // More than a label: digits, or more than two extra words ("Father's Name" is fine).
+  if (/\d/.test(restRaw) || rest.length > 16 || restRaw.trim().split(/\s+/).filter(Boolean).length > 2 || before.length > 12) return null;
+  const x0 = Math.min(...line.map((t) => t.x));
+  const y1 = Math.max(...line.map((t) => t.y + t.height));
+  const h = Math.max(...line.map((t) => t.height));
+  const nextY0 = Math.min(...next.map((t) => t.y));
+  if (nextY0 - y1 > h * 2.5) return null;
+  const cluster = clusterByGap(next).find((c) => Math.abs(Math.min(...c.map((t) => t.x)) - x0) <= h * 3);
+  if (!cluster) return null;
+  const toks = cluster.filter((t) => !claimed.has(t.id) && t.text.replace(/[:\-–—.\s]/g, '').length > 0);
+  if (!toks.length) return null;
+  const text = toks.map((t) => t.text).join(' ').trim();
+  if (!text || re.test(text)) return null; // the next line is another label
+  return { text, tokens: toks };
+}
+
 // Detect and classify redaction targets for a specific document scenario.
 export function classifyForScenario(
   tokens: ExtractedSpatialToken[],
@@ -875,7 +947,11 @@ export function classifyForScenario(
   for (const field of otherFields) {
     for (const line of lines) {
       if (field.detect.kind === 'pattern') {
-        for (const mt of matchInLine(line, field.detect.re)) {
+        // A "date of birth" field must not claim issue / validity / print dates.
+        if (field.key === 'dob' && RE_NON_BIRTH_DATE.test(line.map((t) => t.text).join(' '))) continue;
+        const exact = matchInLine(line, field.detect.re);
+        const matches = field.key === 'pan' && exact.length === 0 ? matchPanTolerant(line) : exact;
+        for (const mt of matches) {
           if (isClaimed(mt.tokens)) continue;
           claim(mt.tokens);
           targets.push({
@@ -893,7 +969,11 @@ export function classifyForScenario(
           });
         }
       } else if (field.detect.kind === 'label') {
-        const mv = matchLabelValue(line, field.detect.re);
+        const li = lines.indexOf(line);
+        let mv = matchLabelValue(line, field.detect.re);
+        // A one- or two-character same-line "value" is speckle next to the label
+        // ("Name Lo"); the real value is on the line below on card layouts.
+        if (!mv || mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 2) mv = valueBelowLabel(lines, li, field.detect.re, claimed) ?? (mv && mv.text.replace(/[^A-Za-z0-9]/g, '').length > 2 ? mv : null);
         if (mv && !isClaimed(mv.tokens)) {
           claim(mv.tokens);
           targets.push({
@@ -1052,33 +1132,44 @@ export function classifyForScenario(
   // Currency / numeric witness selection.
   if (currencyFields.length > 0) {
     const witnessField = currencyFields.find((f) => f.isWitness);
+    // Per-document label ranking (best first): "Closing balance" beats "balance",
+    // "Net pay" beats "Gross salary", "Total income" beats any "income".
+    const labelSets: RegExp[] =
+      witnessField?.detect.kind === 'currency' && witnessField.detect.witnessLabels?.length ? witnessField.detect.witnessLabels : [RE_INCOME_LINE];
     const cands: {
       tokens: ExtractedSpatialToken[];
       text: string;
       value: number;
-      incomeLine: boolean;
+      rank: number;
       confidence: number;
     }[] = [];
     for (const line of lines) {
       const lineText = line.map((t) => t.text).join(' ');
+      const rankOf = labelSets.findIndex((re) => re.test(lineText));
       for (const mt of matchInLine(line, SCENARIO_CURRENCY)) {
         if (isClaimed(mt.tokens)) continue;
+        const value = parseAmount(mt.text);
+        if (!(value > 0)) continue;
         claim(mt.tokens);
         cands.push({
           tokens: mt.tokens,
           text: mt.text,
-          value: parseAmount(mt.text),
-          incomeLine: RE_INCOME_LINE.test(lineText),
+          value,
+          rank: rankOf < 0 ? Number.POSITIVE_INFINITY : rankOf,
           confidence: tokenConfidence(mt.tokens),
         });
       }
     }
     let witnessIdx = -1;
     if (witnessField && cands.length > 0) {
-      witnessIdx = cands.findIndex((c) => c.incomeLine);
-      if (witnessIdx < 0) witnessIdx = cands.findIndex((c) => c.value >= opts.thresholdValue);
-      if (witnessIdx < 0) {
-        witnessIdx = cands.reduce((best, c, i, arr) => (c.value > arr[best].value ? i : best), 0);
+      const bestRank = Math.min(...cands.map((c) => c.rank));
+      if (Number.isFinite(bestRank)) {
+        // Among equally well-labelled amounts take the last one in reading
+        // order: statements end with the closing balance, slips with net pay.
+        cands.forEach((c, i) => { if (c.rank === bestRank) witnessIdx = i; });
+      } else {
+        witnessIdx = cands.findIndex((c) => c.value >= opts.thresholdValue);
+        if (witnessIdx < 0) witnessIdx = cands.reduce((best, c, i, arr) => (c.value > arr[best].value ? i : best), 0);
       }
     }
     cands.forEach((c, i) => {

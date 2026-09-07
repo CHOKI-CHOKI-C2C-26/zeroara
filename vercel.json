@@ -3,6 +3,6 @@
   "framework": "vite",
   "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/((?!api/|sdk/|demo/|assets/|zk/|tesseract/|opencv/|standard_fonts/).*)", "destination": "/index.html" }
+    { "source": "/((?!api/|sdk/|demo/|specimens/|assets/|zk/|tesseract/|opencv/|standard_fonts/).*)", "destination": "/index.html" }
   ]
 }

@@ -26,6 +26,18 @@ const DOCUMENTS: { id: string; claim: string | null }[] = [
   { id: 'generic_id', claim: null },
 ];
 
+const SPECIMENS: { file: string; label: string }[] = [
+  { file: 'Aadhaar_SPECIMEN_sample.png', label: 'Aadhaar card' },
+  { file: 'PAN_Card_SPECIMEN_sample.png', label: 'PAN card' },
+  { file: 'College_ID_SPECIMEN_sample.png', label: 'College ID' },
+  { file: 'Identity_Card_SPECIMEN_sample.png', label: 'Generic ID' },
+  { file: 'Bank_Statement_SPECIMEN_sample.pdf', label: 'Bank statement' },
+  { file: 'Salary_Slip_SPECIMEN_sample.pdf', label: 'Salary slip' },
+  { file: 'Form16_SPECIMEN_sample.pdf', label: 'Tax form (Form 16)' },
+  { file: 'Invoice_SPECIMEN_sample.pdf', label: 'Invoice (generic financial)' },
+  { file: 'Accredited_Investor_Verification_ApexLP.pdf', label: 'Income certificate' },
+];
+
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -206,6 +218,20 @@ report.overallValid;                                 // true when nothing was al
                   {d.id}
                   {d.claim ? ` · ${d.claim} ≥ n` : ' · seal-only'}
                 </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="landing-docs">
+            <span className="landing-docs-label">Specimen documents for testing</span>
+            <p className="landing-well" style={{ padding: 0, margin: 0, background: 'none', boxShadow: 'none', fontSize: '0.84rem', color: 'var(--fg-muted)' }}>
+              Synthetic, clearly marked, one per document type. Use them as the “real file” when trying the flow from your own site.
+            </p>
+            <div className="landing-pills">
+              {SPECIMENS.map((f) => (
+                <a key={f.file} className="neu-hash-pill" href={`/specimens/${f.file}`} download style={{ textDecoration: 'none' }}>
+                  {f.label}
+                </a>
               ))}
             </div>
           </div>

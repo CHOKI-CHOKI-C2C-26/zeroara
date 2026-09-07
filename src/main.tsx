@@ -1,4 +1,6 @@
 import { Buffer } from "buffer";
+// Same Uint8Array hex/base64 polyfills the pdf.js worker gets (public/pdf.polyfills.mjs).
+import "./polyfills/uint8array";
 
 if (typeof window !== "undefined") {
   (window as any).global = window;

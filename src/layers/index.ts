@@ -1,6 +1,7 @@
 // Layer 1: Ingest & SHA-256 Preimage Digest
 export * from './layer1_ingest/types';
 export * from './layer1_ingest/ingestEngine';
+export * from './layer1_ingest/specimens';
 
 // Layer 2: OCR Spatial Extraction & Geometry Detection
 export * from './layer2_ocr/types';

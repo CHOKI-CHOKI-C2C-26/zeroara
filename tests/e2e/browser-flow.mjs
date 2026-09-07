@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const SITE = process.env.SITE || 'http://localhost:5173/';
-const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/aadhaar_specimen.png');
+const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/Aadhaar_SPECIMEN_sample.png');
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 let failures = 0;
 const check = (c, m) => { log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
