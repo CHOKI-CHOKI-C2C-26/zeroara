@@ -27,6 +27,19 @@ Layer 4 is Zeroara's Zero-Knowledge cryptographic core. It evaluates arithmetic 
 ---
 
 ## 🤖 Instructions for AI Agents
-- Circuits live in `circuits/income_threshold.circom`.
+- Circuits live in `circuits/income_threshold.circom` and `circuits/set_membership.circom`.
 - WebAssembly and zkey assets must be accessed via `/zk/income_threshold.wasm` and `/zk/income_threshold.zkey`.
+
+## Private credential set membership
+
+`set_membership.circom` proves that a private credential-derived field value is
+in an approved Poseidon Merkle allowlist. Its only public inputs are
+`allowlistRoot` and `credentialCommitment`; it never exposes the original SSN,
+licence number, salt, siblings, or path direction. It uses a fixed depth of 20
+(up to 1,048,576 leaves). Run `npm run test:zk-membership` to validate the
+off-circuit commitment and Merkle-path construction.
+
+It intentionally does not claim that a credential is absent from a sanctions
+list. That needs a separately governed sparse-Merkle non-membership registry,
+including an authenticated empty-leaf convention and a published root.
 - If an offline environment cannot fetch `/zk/verification_key.json`, ensure the engine seamlessly falls back to `EMBEDDED_VERIFICATION_KEY`.

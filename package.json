@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 tauri",
     "test:zk": "node scripts/test_layer4_zk.cjs",
+    "test:zk-membership": "node scripts/test_set_membership.cjs",
     "verifier": "node server/verifier-api.mjs"
   },
   "dependencies": {
