@@ -5,6 +5,11 @@
  *   ONLY=pan,college_id node tests/e2e/specimens.mjs
  */
 import { chromium } from 'playwright';
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ARTIFACTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.artifacts');
 
 const ZEROARA = process.env.ZEROARA_WEB || 'http://localhost:1420';
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -70,7 +75,8 @@ for (const id of only) {
   } catch (err) {
     failures++;
     log(`FAIL ${id}: ${err.message.split('\n')[0]}`);
-    await page.screenshot({ path: `${process.cwd()}/specimen-${id}-failure.png` }).catch(() => {});
+    await mkdir(ARTIFACTS, { recursive: true }).catch(() => {});
+    await page.screenshot({ path: `${ARTIFACTS}/specimen-${id}-failure.png` }).catch(() => {});
   }
 }
 await browser.close();
