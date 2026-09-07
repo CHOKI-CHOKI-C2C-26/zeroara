@@ -106,7 +106,8 @@ export const isStudentCode = (text: string): boolean => {
   const letters = (t.match(/[A-Z]/g) ?? []).length;
   return digits >= 2 && letters >= 2 && !/^(?:19|20)\d{2}/.test(t) && !/^[A-Z]{5}\d{4}[A-Z]$/.test(t);
 };
-const L_BLOOD = /\bblood\s*(?:group|grp)?\b/i;
+const L_BLOOD = /\bblood\s*(?:group|grp|c,roup)?\b/i;
+const L_APPLICATION = /\b(?:application|app|pp)\.?\s*(?:no|number|id)\b/i;
 const L_PARENT = /\b(?:father|mother|parent|guardian)(?:'s)?\s*(?:name)?\b/i;
 export const RE_GENDER = /\b(?:MALE|FEMALE|TRANSGENDER|Male|Female|Transgender)\b|\u092a\u0941\u0930\u0941\u0937|\u092e\u0939\u093f\u0932\u093e/;
 export const RE_CURRENCY =
@@ -115,7 +116,8 @@ export const RE_CURRENCY =
 // Label keywords (India + generic).
 const L_NAME = /\bname\b/i;
 const L_FATHER = /\bfather'?s?\b/i;
-const L_ADDRESS = /\baddress\b/i;
+// Scanner text layers misread the label: ".4ddress:", "Addres.~:"
+const L_ADDRESS = /(?:\b|[.,]\s?)(?:a|4)ddres+\b/i;
 // No leading boundary: OCR often fuses the label ("UROLLNO", "ROLLNO").
 const L_ROLL = /(?:roll\s*(?:no|number)?|enrol?ment\s*(?:no|number)?)\b/i;
 const L_REG = /\b(?:reg(?:istration)?\.?\s*(?:no|number)?|registration)\b/i;
@@ -223,6 +225,7 @@ export const SCENARIOS: DocumentScenario[] = [
       { ...nameNearDobField(), label: 'Student Name' },
       prominentNameField('Student Name'),
       { key: 'reg_code', label: 'Registration / Roll Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'pattern', re: RE_STUDENT_CODE, validate: isStudentCode }, priority: 22 },
+      { key: 'application', label: 'Application Number', classification: 'Institutional Identifier (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_APPLICATION }, priority: 23 },
       { key: 'blood', label: 'Blood Group', classification: 'Medical Attribute (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_BLOOD }, priority: 34 },
       { key: 'guardian', label: 'Parent / Guardian', classification: 'Relation Name (PII)', action: 'DIRECT_BURN', detect: { kind: 'label', re: L_PARENT }, priority: 26 },
       addressField(),

@@ -601,16 +601,22 @@ function matchInLine(line: ExtractedSpatialToken[], re: RegExp): LineMatch[] {
   return matches;
 }
 
+// Padding scales with the glyph height: scanner-generated text layers place
+// words slightly short of the printed ink, especially at the right edge.
 function unionBox(tokens: ExtractedSpatialToken[], pad = 4) {
   const x0 = Math.min(...tokens.map((t) => t.x));
   const y0 = Math.min(...tokens.map((t) => t.y));
   const x1 = Math.max(...tokens.map((t) => t.x + t.width));
   const y1 = Math.max(...tokens.map((t) => t.y + t.height));
+  const h = Math.max(...tokens.map((t) => t.height));
+  const padL = Math.max(pad, h * 0.2);
+  const padR = Math.max(pad, h * 0.5);
+  const padY = Math.max(pad, h * 0.12);
   return {
-    x: Math.max(0, Math.round(x0 - pad)),
-    y: Math.max(0, Math.round(y0 - pad)),
-    width: Math.round(x1 - x0 + pad * 2),
-    height: Math.round(y1 - y0 + pad * 2),
+    x: Math.max(0, Math.round(x0 - padL)),
+    y: Math.max(0, Math.round(y0 - padY)),
+    width: Math.round(x1 - x0 + padL + padR),
+    height: Math.round(y1 - y0 + padY * 2),
   };
 }
 
@@ -942,7 +948,7 @@ function valueBelowLabel(
   const toks = cluster.filter((t) => !claimed.has(t.id) && t.text.replace(/[:\-–—.\s=|~,]/g, '').length > 0);
   if (!toks.length) return null;
   const text = toks.map((t) => t.text).join(' ').trim();
-  if (!text || re.test(text)) return null; // the next line is another label
+  if (!text || re.test(text) || /[:;]\s*$/.test(text)) return null; // the next line is another label
   return { text, tokens: toks };
 }
 
@@ -1008,16 +1014,37 @@ export function classifyForScenario(
       } else if (field.detect.kind === 'label') {
         const li = lines.indexOf(line);
         let mv = matchLabelValue(line, field.detect.re);
+        // The institution's own address ("Official Address") is not personal data.
+        if (field.key === 'address' && /\b(?:official|institut|college|campus|office|university)/i.test(line.map((t) => t.text).join(' '))) continue;
         // A one- or two-character same-line "value" is speckle next to the label
         // ("Name Lo"); the real value is on the line below on card layouts.
         // Short or low-confidence same-line "values" are speckle next to the label
         // ("Name Lo", "NAME Coe"); on card layouts the real value is the line below.
         // Blood groups ("B+", "AB-") are legitimately short.
-        const RE_BLOOD_GROUP = /^(?:A|B|AB|O)\s*[+-]?\s*(?:ve)?$/i;
+        // OCR often reads the O as "()" or "0".
+        const RE_BLOOD_GROUP = /^(?:A|B|AB|O|\(\)|0)\s*[+-]?\s*(?:ve)?$/i;
         const weak = !!mv && !(field.key === 'blood' && RE_BLOOD_GROUP.test(mv.text)) && (mv.text.replace(/[^A-Za-z0-9]/g, '').length <= 3 || tokenConfidence(mv.tokens) < 45);
         if (!mv || weak) mv = valueBelowLabel(lines, li, field.detect.re, claimed) ?? (mv && !weak ? mv : mv && mv.text.replace(/[^A-Za-z0-9]/g, '').length > 3 ? mv : null);
         // A person-name field never takes institution/document boilerplate as its value.
         if (mv && ['name', 'father', 'guardian'].includes(field.key) && RE_CARD_BOILERPLATE.test(mv.text)) mv = null;
+        // Postal addresses run over several lines: extend the value downwards while
+        // the next line follows closely and is not another labelled field.
+        if (mv && field.key === 'address') {
+          let last = mv.tokens;
+          for (let extra = 0; extra < 3; extra++) {
+            const lastIdx = lines.findIndex((l) => l.includes(last[0]));
+            const cand = lines[lastIdx + 1];
+            if (!cand || cand[0].page !== last[0].page) break;
+            const y1 = Math.max(...last.map((t) => t.y + t.height));
+            const h = Math.max(...last.map((t) => t.height));
+            const candText = cand.map((t) => t.text).join(' ');
+            if (Math.min(...cand.map((t) => t.y)) - y1 > h * 1.2) break;
+            if (/[:：]/.test(candText) || RE_LABEL_WORDS.test(candText) || cand.some((t) => claimed.has(t.id))) break;
+            if (!/[A-Za-z0-9]{2}/.test(candText)) break;
+            mv = { text: `${mv.text} ${candText}`.trim(), tokens: [...mv.tokens, ...cand] };
+            last = cand;
+          }
+        }
         if (mv && !isClaimed(mv.tokens)) {
           claim(mv.tokens);
           targets.push({
@@ -1272,8 +1299,8 @@ export function classifyForScenario(
         }
       }
       if (bestGap >= medianH * 4) {
-        // The portrait fills most of the gap and sits nearer the name below it.
-        const height = Math.round(bestGap * 0.8);
+        // The portrait fills almost the whole gap (hair often starts right under the header).
+        const height = Math.round(bestGap * 0.96);
         const width = Math.round(Math.min(height * 0.85, (maxX - minX) * 0.75));
         const cx = (minX + maxX) / 2;
         targets.push({
@@ -1282,7 +1309,7 @@ export function classifyForScenario(
           classification: cardPhotoField.classification,
           extractedValue: '[image region · inferred from card layout]',
           x: Math.max(0, Math.round(cx - width / 2)),
-          y: Math.round(gapTop + bestGap * 0.15),
+          y: Math.round(gapTop + bestGap * 0.02),
           width,
           height,
           page: firstPage,

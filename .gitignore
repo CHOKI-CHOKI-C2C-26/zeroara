@@ -36,3 +36,6 @@ __pycache__/
 # end-to-end failure screenshots
 *-failure.png
 tests/e2e/.artifacts/
+
+# real documents dropped in for local testing (never commit)
+tests/fixtures/id card*
